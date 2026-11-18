@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Parcours D+</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="map"></div>
+
+  <aside id="panel">
+    <header>
+      <h1>Parcours D+</h1>
+      <button id="toggle" class="ghost" aria-label="Réduire le panneau">▾</button>
+    </header>
+
+    <div id="form">
+      <label class="field">
+        <span>Départ</span>
+        <div class="row">
+          <input id="address" type="search" placeholder="Adresse, ou touche la carte" autocomplete="off">
+          <button id="search" title="Rechercher">🔍</button>
+          <button id="locate" title="Ma position">📍</button>
+        </div>
+      </label>
+
+      <div class="field">
+        <span>Distance (km)</span>
+        <div class="row">
+          <input id="dmin" type="number" inputmode="decimal" min="1" max="60" step="0.5" value="10">
+          <span class="sep">à</span>
+          <input id="dmax" type="number" inputmode="decimal" min="1" max="60" step="0.5" placeholder="option">
+        </div>
+      </div>
+
+      <div class="field">
+        <span>Mode</span>
+        <div class="seg" role="radiogroup">
+          <label><input type="radio" name="mode" value="loop" checked><span>Boucle max D+</span></label>
+          <label><input type="radio" name="mode" value="repeat"><span>Répétitions de côte</span></label>
+        </div>
+      </div>
+
+      <div class="field" id="repsField" hidden>
+        <span>Répétitions</span>
+        <div class="row">
+          <input id="reps" type="number" inputmode="numeric" min="1" max="50" placeholder="auto">
+        </div>
+      </div>
+
+      <div class="field">
+        <span>Surface</span>
+        <div class="seg" role="radiogroup">
+          <label><input type="radio" name="surface" value="mixed" checked><span>Mixte</span></label>
+          <label><input type="radio" name="surface" value="road"><span>Route</span></label>
+          <label><input type="radio" name="surface" value="trail"><span>Chemin</span></label>
+        </div>
+      </div>
+
+      <button id="go" class="primary">Générer</button>
+      <p id="status" aria-live="polite"></p>
+    </div>
+
+    <div id="results" hidden>
+      <div id="tabs"></div>
+      <dl id="stats"></dl>
+      <canvas id="profile"></canvas>
+      <button id="gpx">Exporter en GPX</button>
+    </div>
+  </aside>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
