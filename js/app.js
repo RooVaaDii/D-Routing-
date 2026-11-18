@@ -115,7 +115,8 @@ $('go').onclick = async () => {
   if (dmax > 60) return status('Distance max : 60 km.', true);
   const mode = val('mode');
   const reps = parseInt($('reps').value, 10) || 0;
-  const radius = Math.min(Math.max(dmax * 1000 * 0.36, 1500), 12000);
+  // Rayon de la zone téléchargée : une boucle de D km s'écarte rarement de plus de ~0,3·D du départ.
+  const radius = Math.min(Math.max(dmax * 1000 * 0.3, 1200), 8000);
   $('go').disabled = true;
   try {
     await ensureArea(start, radius);
