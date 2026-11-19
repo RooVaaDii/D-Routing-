@@ -295,7 +295,9 @@ const areaRadius = () => {
   // Objectif dénivelé : zone bornée à 4,5 km de rayon (au-delà, Overpass et le téléphone peinent).
   if (goalIsUp()) return Math.min(Math.max(upMaxKm() * 1000 * 0.2, 1500), 4500);
   const d = parseFloat($('dist').value) * (1 + parseFloat(val('tol')));
-  return Math.min(Math.max(d * 1000 * 0.3, 1200), 8000);
+  // Rayon plafonné à 5 km : une boucle de 22 km s'éloigne rarement de plus de 4 km du départ,
+  // et au-delà le réseau d'une grande ville ne tient plus en mémoire sur un téléphone.
+  return Math.min(Math.max(d * 1000 * 0.3, 1200), 5000);
 };
 
 let area = null;      // zone chargée dans le worker
@@ -429,6 +431,7 @@ async function loadArea(center, r, signal) {
     'La préparation du graphe prend trop de temps. Essaie une distance plus courte.');
   if (!built.nodes) throw new Error('Aucune voie praticable dans cette zone.');
   step('graph', 'done', `${fmtInt(built.nodes)} nœuds`);
+  diag.log(`graphe : ${built.nodes} nœuds, ${built.edges} arêtes en ${Math.round(built.ms)} ms · mémoire ${diag.memory()}`);
   console.info(`Zone prête en ${Math.round(performance.now() - t0)} ms`);
 }
 
@@ -573,6 +576,10 @@ async function generate() {
   step('search', '', '');
   liveBest = 0; setLive(0, null); $('liveBest').textContent = '—'; $('bar').style.width = '0';
   const my = ++genToken;
+  diag.log(`génération : départ ${start[0].toFixed(5)}, ${start[1].toFixed(5)} · ${mode === 'repeat' ? `répétitions de côte (${reps || 'auto'})` : 'parcours varié'} · `
+    + (upGoal ? `objectif +${upGoal} m ±${Math.round(tol * 100)} %` : `${d} km ±${Math.round(tol * 100)} %`)
+    + ` · même côte ${val('cap') === '0' ? 'sans limite' : val('cap')} · montées ${val('maxc') === '0' ? 'sans limite' : val('maxc')}`
+    + ` · tronçon ${$('optReuse').checked ? 'oui' : 'non'} · rue ${$('optStreet').checked ? 'oui' : 'non'} · surface ${val('surface')}${$('stairs').checked ? ' · sans escaliers' : ''}`);
   const cancelled = () => my !== genToken;
   watchWait(my);
   await mapOrTimeout();
@@ -641,6 +648,7 @@ async function generate() {
     results = res.result.routes.sort(goal ? (a, b) => inGoal(a) - inGoal(b) || a.distance - b.distance : (a, b) => b.up - a.up);
     if (!results.length) throw new Error('Aucun parcours trouvé ici. Essaie une autre distance, une autre surface ou un autre départ.');
     step('search', 'done', `${(res.result.timeMs / 1000).toFixed(1)} s`);
+    diag.log(`résultat : ${results.map((r) => `${fmtKm(r.distance)} km +${fmtInt(r.up)} m`).join(' | ')} · ${res.result.graph?.climbs ?? '?'} montées candidates`);
     $('bar').style.width = '100%';
     $('searchTitle').textContent = results.length > 1 ? `${results.length} parcours retenus` : 'Parcours retenu';
     await eliminate(results);

@@ -175,11 +175,14 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.15); }
 .link-btn:hover { color: var(--ink); }
 
 /* Diagnostic (#diag) */
-.diag { position: fixed; z-index: 2000; right: 8px; top: 70px; width: min(360px, calc(100vw - 16px)); max-height: 45vh; overflow: auto;
-  background: rgba(17,18,20,.92); color: #fff; border-radius: 10px; font-size: 11px; }
-.diag-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; }
-.diag-head button { border: none; background: none; color: #fff; font-size: 18px; line-height: 1; }
-.diag pre { margin: 0; padding: 0 10px 10px; white-space: pre-wrap; font: 11px/1.45 ui-monospace, Menlo, monospace; }
+.diag { position: fixed; z-index: 2000; right: 8px; top: 70px; width: min(380px, calc(100vw - 16px));
+  background: rgba(17,18,20,.94); color: #fff; border-radius: 10px; font-size: 11px; }
+.diag-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 10px; }
+.diag-head span { display: flex; gap: 4px; }
+.diag-head button { border: 1px solid rgba(255,255,255,.25); background: none; color: #fff; font-size: 12px; border-radius: 6px; padding: 3px 8px; }
+.diag-head button[data-close] { border: none; font-size: 18px; line-height: 1; padding: 0 4px; }
+.diag pre { margin: 0; padding: 0 10px 10px; white-space: pre-wrap; word-break: break-word; max-height: 42vh; overflow: auto;
+  font: 11px/1.45 ui-monospace, Menlo, monospace; -webkit-overflow-scrolling: touch; }
 
 /* --- Résultat ------------------------------------------------------------ */
 .variants { display: flex; gap: 2px; background: var(--soft); border-radius: 11px; padding: 3px; margin-bottom: 20px; }

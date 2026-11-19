@@ -111,6 +111,15 @@ async function build(bbox, onProgress) {
   const ty0 = Math.floor(lat2y(bbox.n) / EXT), ty1 = Math.floor(lat2y(bbox.s) / EXT);
   const jobs = [];
   for (let x = tx0; x <= tx1; x++) for (let y = ty0; y <= ty1; y++) jobs.push([x, y]);
+  // Cercle de la zone (en unités globales) : les coins de la grille de tuiles sont écartés.
+  const cx = (lon2x(bbox.w) + lon2x(bbox.e)) / 2, cy = (lat2y(bbox.n) + lat2y(bbox.s)) / 2;
+  const circle = { cx, cy, r2: ((lon2x(bbox.e) - lon2x(bbox.w)) / 2) ** 2 * 1.04 };
+  // Tuiles entièrement hors du cercle : inutile de les télécharger.
+  const keep = ([x, y]) => {
+    const nx = Math.max(x * EXT, Math.min(cx, (x + 1) * EXT)), ny = Math.max(y * EXT, Math.min(cy, (y + 1) * EXT));
+    return (nx - cx) ** 2 + (ny - cy) ** 2 <= circle.r2;
+  };
+  for (let i = jobs.length - 1; i >= 0; i--) if (!keep(jobs[i])) jobs.splice(i, 1);
   const total = jobs.length;
   let done = 0;
   onProgress(0, total);
@@ -122,14 +131,15 @@ async function build(bbox, onProgress) {
     while (queue.length) {
       const [x, y] = queue.shift();
       const buf = await fetchTile(tpl, x, y);
-      if (buf) decodeTile(buf, x, y, lines, names);
+      if (buf) decodeTile(buf, x, y, lines, names, circle);
       onProgress(++done, total);
     }
   }));
   return nodeAndExport(lines, names, total);
 }
 
-function decodeTile(buf, tx, ty, lines, names) {
+function decodeTile(buf, tx, ty, lines, names, circle) {
+  const inCircle = (pts) => pts.some((p) => (p[0] - circle.cx) ** 2 + (p[1] - circle.cy) ** 2 <= circle.r2);
   const vt = new VectorTile(new Pbf(buf));
   const ox = tx * EXT, oy = ty * EXT;
   const L = vt.layers.transportation;
@@ -142,7 +152,8 @@ function decodeTile(buf, tx, ty, lines, names) {
     for (const g of f.loadGeometry()) {
       // Chaque tuile ne garde que sa part (sans le tampon), en coordonnées globales.
       for (const part of clipLine(g.map((p) => [p.x, p.y]), 0, 0, EXT, EXT)) {
-        lines.push({ pts: part.map((p) => [ox + p[0], oy + p[1], p[2] === true]), tags, level });
+        const pts = part.map((p) => [ox + p[0], oy + p[1], p[2] === true]);
+        if (inCircle(pts)) lines.push({ pts, tags, level });
       }
     }
   }
@@ -160,7 +171,7 @@ function decodeTile(buf, tx, ty, lines, names) {
 // --- Topologie ------------------------------------------------------------------------------------------
 function nodeAndExport(lines, names, tiles) {
   // Segments indexés dans une grille.
-  const segs = []; // [lineIdx, k] : segment k de la ligne
+  const segLine = [], segK = []; // segment s = sommets k et k+1 de la ligne segLine[s]
   const grid = new Map();
   const cellKey = (cx, cy) => cx * 1e6 + cy;
   const addToGrid = (s, a, b, pad = 0) => {
@@ -172,8 +183,8 @@ function nodeAndExport(lines, names, tiles) {
     }
   };
   lines.forEach((l, li) => {
-    l.splits = l.pts.map(() => []); // points à insérer après le sommet k : [t, x, y]
-    for (let k = 1; k < l.pts.length; k++) { const s = segs.length; segs.push([li, k - 1]); addToGrid(s, l.pts[k - 1], l.pts[k]); }
+    l.splits = null; // Map k → points à insérer après le sommet k : [t, x, y] (rare : créée à la demande)
+    for (let k = 1; k < l.pts.length; k++) { const s = segLine.length; segLine.push(li); segK.push(k - 1); addToGrid(s, l.pts[k - 1], l.pts[k]); }
   });
   const near = (x, y, r, fn) => {
     const seen = new Set();
@@ -183,8 +194,12 @@ function nodeAndExport(lines, names, tiles) {
       }
     }
   };
-  const P = (s) => { const [li, k] = segs[s]; const l = lines[li]; return [l.pts[k], l.pts[k + 1], l, k, li]; };
-  const addSplit = (l, k, t, x, y) => { if (t > 1e-6 && t < 1 - 1e-6) l.splits[k].push([t, x, y]); };
+  const P = (s) => { const li = segLine[s], k = segK[s], l = lines[li]; return [l.pts[k], l.pts[k + 1], l, k, li]; };
+  const addSplit = (l, k, t, x, y) => {
+    if (!(t > 1e-6 && t < 1 - 1e-6)) return;
+    const m = l.splits || (l.splits = new Map());
+    let a = m.get(k); if (!a) m.set(k, (a = [])); a.push([t, x, y]);
+  };
 
   // 1) Croisements au même niveau sans sommet commun.
   for (const cell of grid.values()) {
@@ -257,24 +272,30 @@ function nodeAndExport(lines, names, tiles) {
   const ids = new Map();
   let nextId = 1, wayId = 1;
   const idOf = (x, y) => { const k = `${q(x)},${q(y)}`; let id = ids.get(k); if (!id) ids.set(k, (id = nextId++)); return id; };
-  const elements = [];
-  for (const l of lines) {
+  // Texte écrit au fil de l'eau (pas d'objets intermédiaires : moins de mémoire sur téléphone).
+  const out = [];
+  let ways = 0;
+  for (let li = 0; li < lines.length; li++) {
+    const l = lines[li];
+    lines[li] = null; // libéré au fur et à mesure
     const seq = [];
     for (let k = 0; k < l.pts.length; k++) {
       seq.push(l.pts[k]);
-      if (k < l.pts.length - 1 && l.splits[k].length) for (const [, x, y] of l.splits[k].sort((a, b) => a[0] - b[0])) seq.push([x, y]);
+      const sp = l.splits?.get(k);
+      if (sp) for (const [, x, y] of sp.sort((a, b) => a[0] - b[0])) seq.push([x, y]);
     }
-    const nodes = [], geometry = [];
+    const nodes = [], geom = [];
     for (const [x, y] of seq) {
       const id = idOf(x, y);
       if (nodes[nodes.length - 1] === id) continue;
-      nodes.push(id); geometry.push({ lat: r6(y2lat(y)), lon: r6(x2lon(x)) });
+      nodes.push(id); geom.push(`{"lat":${r6(y2lat(y))},"lon":${r6(x2lon(x))}}`);
     }
     if (nodes.length < 2) continue;
     const m = seq[seq.length >> 1], m0 = seq[(seq.length >> 1) - 1] || m;
     const name = nameAt((m[0] + m0[0]) / 2, (m[1] + m0[1]) / 2);
-    elements.push({ type: 'way', id: wayId++, nodes, geometry, tags: name ? { ...l.tags, name } : l.tags });
+    const tags = JSON.stringify(name ? { ...l.tags, name } : l.tags);
+    out.push(`{"type":"way","id":${++ways},"nodes":[${nodes.join(',')}],"geometry":[${geom.join(',')}],"tags":${tags}}`);
   }
-  return { text: JSON.stringify({ elements }), tiles, ways: elements.length };
+  return { text: `{"elements":[${out.join(',')}]}`, tiles, ways };
 }
 export { build };
