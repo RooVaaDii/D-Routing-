@@ -90,7 +90,7 @@ const prefs = (() => { try { return JSON.parse(localStorage.getItem('dplus-prefs
 const savePrefs = () => {
   try {
     localStorage.setItem('dplus-prefs-v2', JSON.stringify({
-      dist: $('dist').value, tol: val('tol'), mode: val('mode'), surface: val('surface'), cap: val('cap'), reps,
+      dist: $('dist').value, up: $('up').value, goal: val('goal'), tol: val('tol'), mode: val('mode'), surface: val('surface'), cap: val('cap'), reps,
       stairs: $('stairs').checked, reuse: $('optReuse').checked, street: $('optStreet').checked,
     }));
   } catch { /* stockage indisponible */ }
@@ -170,23 +170,40 @@ $('geoBtn').onclick = locateMe;
 
 // --- Réglages -----------------------------------------------------------------------
 const fmtDec = (x) => x.toLocaleString('fr-FR', { maximumFractionDigits: 1 });
-function updateDistance() {
-  const d = parseFloat($('dist').value), tol = parseFloat(val('tol'));
-  $('distOut').textContent = fmtDec(d);
-  $('rangeOut').textContent = `${fmtDec(d * (1 - tol))} – ${fmtDec(d * (1 + tol))} km`;
-  const el = $('dist');
-  el.style.setProperty('--pct', `${((d - el.min) / (el.max - el.min)) * 100}%`);
+const goalIsUp = () => val('goal') === 'up';
+const setPct = (el) => el.style.setProperty('--pct', `${((el.value - el.min) / (el.max - el.min)) * 100}%`);
+/** Objectif dénivelé : distance maximale explorée (estimation prudente, ~18 m de D+ par km). */
+const upMaxKm = () => Math.min(42, Math.max(4, parseFloat($('up').value) / 18));
+function updateGoal() {
+  const tol = parseFloat(val('tol')), up = goalIsUp();
+  $('goalDist').hidden = up;
+  $('goalUp').hidden = !up;
+  $('tolLabel').textContent = up ? 'Marge sur le dénivelé' : 'Marge sur la distance';
+  if (up) {
+    const u = parseFloat($('up').value);
+    $('upOut').textContent = `+${fmtInt(u)}`;
+    $('rangeOut').textContent = `entre ${fmtInt(u * (1 - tol))} et ${fmtInt(u * (1 + tol))} m`;
+  } else {
+    const d = parseFloat($('dist').value);
+    $('distOut').textContent = fmtDec(d);
+    $('rangeOut').textContent = `entre ${fmtDec(d * (1 - tol))} et ${fmtDec(d * (1 + tol))} km`;
+  }
+  setPct($('dist')); setPct($('up'));
 }
-$('dist').addEventListener('input', updateDistance);
-$('dist').addEventListener('change', preloadSoon);
-document.querySelectorAll('input[name=tol]').forEach((r) => r.addEventListener('change', () => { updateDistance(); preloadSoon(); }));
+for (const id of ['dist', 'up']) {
+  $(id).addEventListener('input', updateGoal);
+  $(id).addEventListener('change', preloadSoon);
+}
+document.querySelectorAll('input[name=tol], input[name=goal]').forEach((r) => r.addEventListener('change', () => { updateGoal(); preloadSoon(); }));
 
 let reps = 0;
 function showReps() {
   $('repsOut').textContent = reps ? `×${reps}` : 'Auto';
   $('repsHelp').textContent = reps
-    ? `Plusieurs côtes, chacune montée ${reps} fois.`
-    : 'La meilleure côte du coin, montée autant de fois que la distance le permet.';
+    ? `Un circuit de plusieurs côtes, chacune montée ${reps} fois.`
+    : goalIsUp()
+      ? 'La meilleure côte du coin, montée autant de fois qu’il faut pour atteindre le dénivelé.'
+      : 'La meilleure côte du coin, montée autant de fois que la distance le permet.';
 }
 $('repsMinus').onclick = () => { reps = Math.max(0, reps - 1); showReps(); };
 $('repsPlus').onclick = () => { reps = Math.min(20, reps + 1); showReps(); };
@@ -194,16 +211,22 @@ const syncMode = () => {
   const rep = val('mode') === 'repeat';
   $('repsRow').hidden = !rep;
   $('loopOpts').hidden = rep;
+  $('modeHelp').textContent = rep
+    ? 'Une séance : monter et redescendre une ou plusieurs côtes.'
+    : 'Une boucle qui enchaîne les meilleures montées du coin.';
+  showReps();
 };
 document.querySelectorAll('input[name=mode]').forEach((r) => r.addEventListener('change', syncMode));
+document.querySelectorAll('input[name=goal]').forEach((r) => r.addEventListener('change', showReps));
 
 if (prefs.dist) $('dist').value = prefs.dist;
-for (const k of ['tol', 'mode', 'surface', 'cap']) if (prefs[k]) check(k, prefs[k]);
+if (prefs.up) $('up').value = prefs.up;
+for (const k of ['goal', 'tol', 'mode', 'surface', 'cap']) if (prefs[k]) check(k, prefs[k]);
 if (prefs.reps) reps = prefs.reps;
 if (prefs.stairs) $('stairs').checked = true;
 if (prefs.reuse === false) $('optReuse').checked = false;
 if (prefs.street === false) $('optStreet').checked = false;
-updateDistance(); showReps(); syncMode();
+updateGoal(); syncMode();
 
 // --- Worker ---------------------------------------------------------------------------
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
@@ -232,7 +255,7 @@ function step(name, st, text = '') {
 }
 
 const areaRadius = () => {
-  const d = parseFloat($('dist').value) * (1 + parseFloat(val('tol')));
+  const d = goalIsUp() ? upMaxKm() : parseFloat($('dist').value) * (1 + parseFloat(val('tol')));
   return Math.min(Math.max(d * 1000 * 0.3, 1200), 8000);
 };
 
@@ -387,12 +410,16 @@ function setLive(evals, best) {
 // --- Génération ---------------------------------------------------------------------------------
 let results = [];
 let current = 0;
+let goal = null; // objectif dénivelé de la dernière génération
 const BUDGET = 3600;
 
 async function generate() {
   if (!start) return hint('Choisis d’abord un départ : adresse, position, ou touche la carte.', true);
-  const d = parseFloat($('dist').value), tol = parseFloat(val('tol'));
-  const dmin = d * (1 - tol), dmax = d * (1 + tol);
+  const tol = parseFloat(val('tol'));
+  // Objectif dénivelé : la distance devient libre (bornée par la zone chargée).
+  const upGoal = goalIsUp() ? parseFloat($('up').value) : 0;
+  const d = parseFloat($('dist').value);
+  const dmin = upGoal ? 1 : d * (1 - tol), dmax = upGoal ? upMaxKm() : d * (1 + tol);
   const mode = val('mode');
   savePrefs();
   setState('search');
@@ -421,6 +448,7 @@ async function generate() {
       startLatLon: start, mode, dmin: dmin * 1000, dmax: dmax * 1000, reps: mode === 'repeat' ? reps : 0,
       surface: val('surface'), avoidStairs: $('stairs').checked,
       avoidReuse: $('optReuse').checked, avoidSameStreet: $('optStreet').checked, hillCap: parseInt(val('cap'), 10),
+      ...(upGoal ? { upTarget: upGoal, upTol: tol } : {}),
       budgetMs: BUDGET, seed: (Math.random() * 2 ** 31) | 0,
     };
     const res = await call({ type: 'solve', params }, (p) => {
@@ -445,7 +473,10 @@ async function generate() {
       }
     }
     await drainQueue(1200);
-    results = res.result.routes.sort((a, b) => b.up - a.up);
+    goal = upGoal ? { up: upGoal, lo: upGoal * (1 - tol), hi: upGoal * (1 + tol) } : null;
+    const inGoal = (r) => (r.up >= goal.lo && r.up <= goal.hi ? 0 : 1);
+    // Objectif dénivelé : d'abord ceux qui sont dans la marge, puis le plus court.
+    results = res.result.routes.sort(goal ? (a, b) => inGoal(a) - inGoal(b) || a.distance - b.distance : (a, b) => b.up - a.up);
     if (!results.length) throw new Error('Aucun parcours trouvé ici. Essaie une autre distance, une autre surface ou un autre départ.');
     step('search', 'done', `${(res.result.timeMs / 1000).toFixed(1)} s`);
     $('bar').style.width = '100%';
@@ -498,6 +529,15 @@ async function show(i, animate) {
     climb.textContent = `${r.circuit.length} côte${r.circuit.length > 1 ? 's' : ''} × ${r.circuit[0].reps} : ` +
       r.circuit.map((c) => `${fmtInt(c.length)} m (+${fmtInt(c.gain)} m)`).join(' · ');
   } else climb.hidden = true;
+
+  // Objectif dénivelé hors d'atteinte : on le dit, sans détour.
+  const gn = $('rGoal');
+  gn.hidden = !goal || (r.up >= goal.lo && r.up <= goal.hi);
+  if (!gn.hidden) {
+    gn.textContent = r.up < goal.lo
+      ? `Objectif +${fmtInt(goal.up)} m non atteint autour de ce départ (au plus ${fmtInt(upMaxKm())} km explorés). Essaie une marge plus large ou un autre départ.`
+      : `Un peu plus que l’objectif +${fmtInt(goal.up)} m : pas de parcours plus juste ici.`;
+  }
 
   const facts = [
     ['D−', `${fmtInt(r.down)} m`],

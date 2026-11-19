@@ -59,6 +59,13 @@ async function run(name, viewport, mode) {
   await page.click('input[value=repeat] + span');
   await page.click('#repsPlus'); await page.click('#repsPlus');
   await runOnce('circuit');
+  // Objectif dénivelé (parcours varié, +150 m)
+  await page.click('#edit');
+  await page.click('input[value=loop] + span');
+  await page.click('input[value=up] + span');
+  await page.fill('#up', '150'); await page.dispatchEvent('#up', 'input');
+  await runOnce('upgoal');
+  console.log(name, 'objectif :', await page.isVisible('#rGoal') ? await page.textContent('#rGoal') : 'atteint');
   await browser.close();
 }
 (async () => {

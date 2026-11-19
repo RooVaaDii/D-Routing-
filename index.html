@@ -37,13 +37,26 @@
       <p class="note" id="preload" aria-live="polite"></p>
 
       <div class="block">
-        <div class="row-between">
-          <span class="label">Distance</span>
-          <span id="rangeOut" class="aside">11,4 – 12,6 km</span>
+        <div class="seg seg-goal" role="radiogroup" aria-label="Objectif">
+          <label><input type="radio" name="goal" value="dist" checked><span>Distance</span></label>
+          <label><input type="radio" name="goal" value="up"><span>Dénivelé</span></label>
         </div>
-        <div class="distance"><output id="distOut" class="num">12</output><span class="unit">km</span></div>
-        <input id="dist" type="range" min="2" max="42" step="0.5" value="12" aria-label="Distance en kilomètres">
-        <div class="seg" role="radiogroup" aria-label="Tolérance">
+
+        <div id="goalDist" class="goal">
+          <div class="distance"><output id="distOut" class="num">12</output><span class="unit">km</span></div>
+          <input id="dist" type="range" min="2" max="42" step="0.5" value="12" aria-label="Distance en kilomètres">
+        </div>
+        <div id="goalUp" class="goal" hidden>
+          <div class="distance"><output id="upOut" class="num">+300</output><span class="unit">m de D+</span></div>
+          <input id="up" type="range" min="50" max="1500" step="10" value="300" aria-label="Dénivelé positif visé en mètres">
+          <p class="note">Le parcours le plus court qui atteint ce dénivelé.</p>
+        </div>
+
+        <div class="row-between line">
+          <span id="tolLabel">Marge sur la distance</span>
+          <span id="rangeOut" class="aside">entre 11,4 et 12,6 km</span>
+        </div>
+        <div class="seg" role="radiogroup" aria-labelledby="tolLabel">
           <label><input type="radio" name="tol" value="0.05" checked><span>±5 %</span></label>
           <label><input type="radio" name="tol" value="0.1"><span>±10 %</span></label>
           <label><input type="radio" name="tol" value="0.2"><span>±20 %</span></label>
@@ -52,33 +65,47 @@
 
       <div class="block">
         <span class="label">Type de sortie</span>
-        <div class="seg seg-lg" role="radiogroup">
-          <label><input type="radio" name="mode" value="loop" checked><span>Boucle</span></label>
-          <label><input type="radio" name="mode" value="repeat"><span>Côtes</span></label>
+        <div class="seg seg-lg" role="radiogroup" aria-label="Type de sortie">
+          <label><input type="radio" name="mode" value="loop" checked><span>Parcours varié</span></label>
+          <label><input type="radio" name="mode" value="repeat"><span>Répétitions de côte</span></label>
         </div>
+        <p class="note" id="modeHelp"></p>
 
-        <div id="loopOpts">
-          <div class="row-between line">
-            <span>Même côte, au plus</span>
-            <div class="seg seg-sm" role="radiogroup" aria-label="Nombre maximal de montées d'une même côte">
-              <label><input type="radio" name="cap" value="1"><span>×1</span></label>
-              <label><input type="radio" name="cap" value="2" checked><span>×2</span></label>
-              <label><input type="radio" name="cap" value="3"><span>×3</span></label>
-              <label><input type="radio" name="cap" value="0"><span>∞</span></label>
+        <div id="loopOpts" class="opts">
+          <div class="opt">
+            <div class="row-between line">
+              <span>Remonter une même côte</span>
+              <div class="seg seg-sm" role="radiogroup" aria-label="Nombre maximal de montées d'une même côte">
+                <label><input type="radio" name="cap" value="1"><span>1 fois</span></label>
+                <label><input type="radio" name="cap" value="2" checked><span>2</span></label>
+                <label><input type="radio" name="cap" value="3"><span>3</span></label>
+                <label><input type="radio" name="cap" value="0"><span>sans limite</span></label>
+              </div>
             </div>
+            <p class="note">Au plus, dans la même sortie.</p>
+          </div>
+          <div class="opt">
+            <label class="switch"><span>Ne pas repasser par le même tronçon</span><input id="optReuse" type="checkbox" checked><i></i></label>
+            <p class="note">Évite d’emprunter deux fois le même bout de rue ou de chemin.</p>
+          </div>
+          <div class="opt">
+            <label class="switch"><span>Ne pas revenir sur une rue déjà prise</span><input id="optStreet" type="checkbox" checked><i></i></label>
+            <p class="note">Évite de retrouver une rue déjà parcourue, même sur une autre portion.</p>
           </div>
         </div>
 
-        <div id="repsRow" hidden>
-          <div class="row-between line">
-            <span>Répétitions par côte</span>
-            <div class="stepper">
-              <button type="button" id="repsMinus" aria-label="Moins">−</button>
-              <output id="repsOut">Auto</output>
-              <button type="button" id="repsPlus" aria-label="Plus">+</button>
+        <div id="repsRow" class="opts" hidden>
+          <div class="opt">
+            <div class="row-between line">
+              <span>Montées par côte</span>
+              <div class="stepper">
+                <button type="button" id="repsMinus" aria-label="Moins">−</button>
+                <output id="repsOut">Auto</output>
+                <button type="button" id="repsPlus" aria-label="Plus">+</button>
+              </div>
             </div>
+            <p class="note" id="repsHelp"></p>
           </div>
-          <p class="note" id="repsHelp"></p>
         </div>
       </div>
 
@@ -89,8 +116,6 @@
           <label><input type="radio" name="surface" value="road"><span>Route</span></label>
           <label><input type="radio" name="surface" value="trail"><span>Chemin</span></label>
         </div>
-        <label class="switch"><span>Éviter de repasser au même endroit</span><input id="optReuse" type="checkbox" checked><i></i></label>
-        <label class="switch"><span>Éviter de reprendre la même rue</span><input id="optStreet" type="checkbox" checked><i></i></label>
         <label class="switch"><span>Éviter les escaliers</span><input id="stairs" type="checkbox"><i></i></label>
       </div>
 
@@ -125,6 +150,7 @@
         <div><b class="num" id="rDist">0,0</b><span class="label">km</span></div>
       </div>
       <p class="climb" id="rClimb" hidden></p>
+      <p class="goal-note" id="rGoal" hidden></p>
       <dl class="facts" id="rFacts"></dl>
       <canvas id="profile" aria-label="Profil altimétrique"></canvas>
       <div class="actions">

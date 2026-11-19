@@ -421,7 +421,9 @@ export function solve(g, params, onProgress = () => {}) {
     startLatLon, mode = 'loop', dmin, dmax, surface = 'mixed', reps = 0,
     climbLen = 'auto', budgetMs = 3000, seed = 1, avoidStairs = false,
     avoidReuse = true, avoidSameStreet = true, hillCap = 2,
+    upTarget = 0, upTol = 0.1, // objectif « dénivelé » (0 = objectif distance, comportement d'origine)
   } = params;
+  const goalUp = upTarget > 0 ? { target: upTarget, lo: upTarget * (1 - upTol), hi: upTarget * (1 + upTol) } : null;
   const rand = rng(seed);
   const circuit = mode === 'repeat' && reps > 0; // N répétitions de plusieurs côtes
   const router = new Router(g, surface, {
@@ -450,13 +452,14 @@ export function solve(g, params, onProgress = () => {}) {
   const common = { startNode: s, snapDistance: Math.hypot(g.x[s] - sx, g.y[s] - sy) };
   let routes;
   if (mode === 'repeat' && !circuit) {
-    routes = solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, reps, s, onProgress });
+    routes = solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, reps, s, onProgress, goalUp });
   } else {
     routes = solveLoop(g, router, tree, climbs, climbPath, {
       dmin, dmax, target, s, budgetMs, rand, t0, onProgress,
       circuitReps: circuit ? reps : 0,
       wOverlap: circuit ? 0 : avoidReuse ? 1 : 0.25,
       wStreet: circuit ? 0 : avoidSameStreet ? 0.7 : 0,
+      goalUp,
     });
   }
   return {
@@ -478,9 +481,24 @@ function distPenalty(L, dmin, dmax, upPerKm) {
   return (dev / 1000) * (60 + 3 * upPerKm);
 }
 
+// --- Objectif « dénivelé » : atteindre la plage de D+ visée, puis le plus court possible ---
+const GOAL_SHORT = 4;   // points perdus par mètre de D+ sous la valeur visée
+const GOAL_UNDER = 8;   // … en plus, par mètre sous la marge
+const GOAL_OVER = 2;    // … par mètre au-delà de la marge
+const GOAL_KM = 15;     // … par kilomètre parcouru (départage : plus court = mieux)
+
+/** Écart (m) entre un D+ et la plage visée ; 0 si dedans. */
+const goalGap = (goal, up) => (up < goal.lo ? goal.lo - up : up > goal.hi ? up - goal.hi : 0);
+
+/** Pénalité commune : D+ hors plage et longueur. */
+function goalPenalty(goal, up, L) {
+  return GOAL_SHORT * Math.max(0, goal.target - up) + GOAL_UNDER * Math.max(0, goal.lo - up)
+    + GOAL_OVER * Math.max(0, up - goal.hi) + GOAL_KM * (L / 1000);
+}
+
 // --- Répétitions de côte -----------------------------------------------------------
 
-function solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, reps, s, onProgress }) {
+function solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, reps, s, onProgress, goalUp = null }) {
   const scored = [];
   for (const c of climbs) {
     // On rejoint l'extrémité la plus proche (pied ou sommet).
@@ -491,7 +509,12 @@ function solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, 
     const approachUp = tree.up[E] + tree.down[E]; // aller + retour
     let N;
     if (reps > 0) N = reps;
-    else {
+    else if (goalUp) {
+      // Juste assez de répétitions pour atteindre le D+ visé.
+      N = Math.ceil(Math.max(0, goalUp.target - approachUp) / c.gain);
+      if (N < 1) N = 1;
+      if (N > 60) N = 60;
+    } else {
       N = Math.floor((dmax - 2 * a) / (2 * c.len));
       if (N < 1) N = 1;
       if (N > 60) N = 60;
@@ -500,7 +523,9 @@ function solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, 
     const est = N * c.gain + approachUp;
     // Le mode « côte » doit tirer son D+ des répétitions, pas du trajet d'accès.
     const approachPen = Math.max(0, 2 * a - 0.35 * L) / 1000 * 40;
-    const score = N * c.gain + 0.3 * approachUp - approachPen - distPenalty(L, dmin, dmax, est / (L / 1000));
+    const score = goalUp
+      ? goalUp.target - approachPen - goalPenalty(goalUp, est, L) - distPenalty(L, dmin, dmax, est / (L / 1000))
+      : N * c.gain + 0.3 * approachUp - approachPen - distPenalty(L, dmin, dmax, est / (L / 1000));
     scored.push({ c, E, N, a, L, est, score });
   }
   scored.sort((x, y) => y.score - x.score);
@@ -546,7 +571,8 @@ function solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, 
 // --- Boucle libre --------------------------------------------------------------------
 
 function solveLoop(g, router, tree, climbs, climbPath, ctx) {
-  const { dmin, dmax, target, s, budgetMs, rand, t0, onProgress, circuitReps = 0, wOverlap = 1, wStreet = 0.7 } = ctx;
+  const { dmin, dmax, s, budgetMs, rand, t0, onProgress, circuitReps = 0, wOverlap = 1, wStreet = 0.7, goalUp = null } = ctx;
+  let { target } = ctx;
   const sx = g.x[s], sy = g.y[s];
   const now = () => performance.now() - t0;
 
@@ -560,7 +586,15 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
   }
 
   if (circuitReps && !cands.length) throw new Error('Aucune côte assez marquée à proximité pour un circuit de répétitions.');
+  if (goalUp) {
+    // Distance de départ estimée d'après la densité des montées du coin (affinée ensuite).
+    const dens = cands.slice(0, 20).map((c) => c.gain / c.len).sort((a, b) => a - b);
+    const d = dens.length ? Math.min(0.08, Math.max(0.008, 0.45 * dens[dens.length >> 1])) : 0.015;
+    target = Math.min(dmax * 0.9, Math.max(dmin, goalUp.target / d));
+  }
   const r0 = target / (2 * Math.PI);
+  // Hors objectif : la distance (mode d'origine) ou le D+ (objectif dénivelé).
+  const outOfRange = goalUp ? (res) => goalGap(goalUp, res.up) > 0 : (res) => res.L < dmin || res.L > dmax;
 
   // Accroche un point à un nœud accessible, en privilégiant le haut ou le bas.
   const snap = (px, py, role, rad) => {
@@ -607,7 +641,13 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
     const upPerKm = st.up / Math.max(st.L / 1000, 0.1);
     // On optimise la « qualité » des montées (les mini-bosses ne rapportent rien).
     const q = st.quality - 1.5 * st.excess;
-    const score = q * (1 - wOverlap * st.overlap) * (1 - wStreet * st.revisit) - distPenalty(st.L, dmin, dmax, upPerKm);
+    let score;
+    if (goalUp) {
+      // Part du D+ venant de vraies montées : les « dents de scie » restent pénalisées.
+      const shape = Math.min(1, Math.max(0, q / Math.max(st.up, 1)));
+      score = goalUp.target * (0.6 + 0.4 * shape) * (1 - wOverlap * st.overlap) * (1 - wStreet * st.revisit)
+        - goalPenalty(goalUp, st.up, st.L) - distPenalty(st.L, dmin, dmax, upPerKm);
+    } else score = q * (1 - wOverlap * st.overlap) * (1 - wStreet * st.revisit) - distPenalty(st.L, dmin, dmax, upPerKm);
     return { path, ...st, score };
   };
 
@@ -659,7 +699,7 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
   const mutate = (base, res) => {
     const sol = clone(base);
     const L = res.L;
-    const tooLong = L > dmax, tooShort = L < dmin;
+    const tooLong = goalUp ? res.up > goalUp.hi : L > dmax, tooShort = goalUp ? res.up < goalUp.lo : L < dmin;
     const r = rand();
     if (circuitReps) {
       // Circuit de côtes : on ajoute, retire ou remplace des côtes
@@ -678,7 +718,8 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
     const wps = sol.els.map((e, i) => [e, i]).filter(([e]) => e.t === 'w');
     if ((tooLong || tooShort) && wps.length && r < 0.6) {
       // Mise à l'échelle des points de passage libres
-      const f = Math.min(1.6, Math.max(0.6, Math.pow(target / L, 0.9) * (0.9 + rand() * 0.2)));
+      const ratio = goalUp ? goalUp.target / Math.max(res.up, 1) : target / L;
+      const f = Math.min(1.6, Math.max(0.6, Math.pow(ratio, 0.9) * (0.9 + rand() * 0.2)));
       for (const [e, i] of wps) {
         const nx = sx + (g.x[e.n] - sx) * f, ny = sy + (g.y[e.n] - sy) * f;
         const n = snap(nx, ny, e.role, Math.max(120, 0.25 * r0));
@@ -766,7 +807,7 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
     consider(res);
     // Réparation rapide de la distance
     let cur = sol;
-    for (let k = 0; k < 3 && res && (res.L < dmin || res.L > dmax); k++) {
+    for (let k = 0; k < 3 && res && outOfRange(res); k++) {
       const m = mutate(cur, res);
       const r2 = evaluate(m); evals++;
       if (r2 && r2.score > res.score) { cur = m; res = r2; }
