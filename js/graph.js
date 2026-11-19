@@ -257,7 +257,32 @@ export function buildGraph(elements, elevAt, center) {
   }
   Object.assign(g, { adjStart, adjEdge, adjTo, adjRev });
   g.grid = buildGrid(g, 250);
+  labelComponents(g);
   return g;
+}
+
+/** Composantes connexes : évite d'accrocher le départ à un îlot isolé. */
+function labelComponents(g) {
+  const comp = new Int32Array(g.N).fill(-1);
+  const sizes = [];
+  const stack = new Int32Array(g.N);
+  for (let s = 0; s < g.N; s++) {
+    if (comp[s] >= 0) continue;
+    const id = sizes.length;
+    let top = 0, size = 0;
+    stack[top++] = s; comp[s] = id;
+    while (top) {
+      const u = stack[--top]; size++;
+      for (let p = g.adjStart[u]; p < g.adjStart[u + 1]; p++) {
+        const v = g.adjTo[p];
+        if (comp[v] < 0) { comp[v] = id; stack[top++] = v; }
+      }
+    }
+    sizes.push(size);
+  }
+  g.comp = comp;
+  g.compSize = Int32Array.from(sizes);
+  g.mainSize = sizes.length ? Math.max(...sizes) : 0;
 }
 
 // --- Index spatial --------------------------------------------------------

@@ -383,7 +383,9 @@ export function solve(g, params, onProgress = () => {}) {
   const rand = rng(seed);
   const router = new Router(g, surface, { avoidStairs });
   const [sx, sy] = project(g, startLatLon);
-  const s = nearestNode(g, sx, sy);
+  // Départ accroché au réseau principal (pas à un îlot de chemins isolé)
+  const minComp = Math.min(g.mainSize, Math.max(200, g.mainSize * 0.2));
+  const s = nearestNode(g, sx, sy, (i) => g.compSize[g.comp[i]] >= minComp);
   if (s < 0) throw new Error('Aucune voie praticable près du point de départ.');
   const target = (dmin + dmax) / 2;
   const tree = router.tree(s, dmax * 2.2);
