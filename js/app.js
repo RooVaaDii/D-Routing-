@@ -305,11 +305,13 @@ const covers = (z, center, radius) => z && haversine(z.center[0], z.center[1], c
 function ensureArea(center, radius) {
   if (covers(area, center, radius)) { for (const s of ['osm', 'dem', 'graph']) step(s, 'done', 'prêt'); return Promise.resolve(); }
   if (loading && covers(loading, center, radius)) return loading.promise;
-  const prev = loading?.promise.catch(() => {});
-  const z = { center, radius: radius * 1.15 };
+  // Une zone plus grande ou ailleurs est demandée : l'ancien téléchargement est annulé tout de
+  // suite (sinon les requêtes s'empilent et les serveurs Overpass nous font attendre).
+  if (loading) { loading.ctrl.abort(); diag.log('téléchargement précédent annulé : nouvelle zone'); }
+  const z = { center, radius: radius * 1.15, ctrl: new AbortController() };
   z.promise = (async () => {
-    await prev;
-    await loadArea(center, z.radius);
+    await loadArea(center, z.radius, z.ctrl.signal);
+    if (z.ctrl.signal.aborted) throw new DOMException('Zone remplacée', 'AbortError');
     area = z;
   })();
   z.promise.finally(() => { if (loading === z) loading = null; }).catch(() => {});
@@ -325,16 +327,17 @@ function elevRange(dem) {
   return a.length ? [a[Math.floor(a.length * 0.02)], a[Math.floor(a.length * 0.98)]] : [0, 100];
 }
 
-async function loadArea(center, r) {
+async function loadArea(center, r, signal) {
+  const live = () => !signal.aborted; // zone toujours d'actualité ?
   const bbox = bboxAround(center[0], center[1], r);
   const t0 = performance.now();
-  step('osm', 'on'); step('dem', 'on'); step('graph', '');
+  step('osm', 'on'); live() && step('dem', 'on'); step('graph', '');
   fx?.begin(center, r);
 
   const osmP = (async () => {
     const hit = await findCovering('osm', bbox);
     if (hit) { step('osm', 'done', 'en cache'); fx?.network(hit.data); return hit.data; }
-    const text = await fetchOsm(bbox, { onStatus: (t) => step('osm', 'on', t.toLowerCase()) });
+    const text = await fetchOsm(bbox, { signal, onStatus: (t) => { if (!signal.aborted) step('osm', 'on', t.toLowerCase()); } });
     step('osm', 'done', `${(text.length / 1e6).toFixed(1)} Mo`);
     fx?.network(text);
     save('osm', bbox, text);
@@ -342,28 +345,32 @@ async function loadArea(center, r) {
   })();
 
   const demP = (async () => {
+    await wait(0);
+    if (!live()) throw new DOMException('Zone remplacée', 'AbortError');
     const terrarium = await withTimeout(
-      loadDem(bbox, browserDecode, { onProgress: (f) => { step('dem', 'on', `${Math.round(f * 100)} %`); fx?.setRelief(f * 0.9); } }),
+      loadDem(bbox, browserDecode, { onProgress: (f) => { live() && step('dem', 'on', `${Math.round(f * 100)} %`); if (live()) fx?.setRelief(f * 0.9); } }),
       60000, 'Les altitudes (Terrarium) ne répondent pas. Vérifie la connexion et réessaie.');
-    fx?.setRange(...elevRange(terrarium));
+    if (live()) fx?.setRange(...elevRange(terrarium));
     if (inFrance(bbox)) {
       let ign = await findCovering('ign', bbox);
       let dem = ign ? { ...ign.data, fallback: terrarium } : null;
       if (!dem) {
+        if (!live()) return terrarium; // zone remplacée : inutile de télécharger l'IGN
         step('dem', 'on', 'IGN');
         const raw = await withTimeout(loadIgnDem(bbox), 20000, 'IGN : délai dépassé')
           .catch((e) => { diag.log(`IGN indisponible, repli Terrarium (${e.message})`); return null; });
         dem = raw && validateIgn(raw, terrarium);
         if (dem) { const { fallback, ...store } = dem; save('ign', bbox, store); }
       }
-      if (dem) { demSource = 'IGN RGE ALTI'; step('dem', 'done', ign ? 'IGN · en cache' : 'IGN'); return dem; }
+      if (dem) { demSource = 'IGN RGE ALTI'; live() && step('dem', 'done', ign ? 'IGN · en cache' : 'IGN'); return dem; }
     }
     demSource = 'Terrarium (SRTM)';
-    step('dem', 'done', 'SRTM');
+    live() && step('dem', 'done', 'SRTM');
     return terrarium;
   })();
 
   const [osmText, dem] = await Promise.all([osmP, demP]);
+  if (signal.aborted) throw new DOMException('Zone remplacée', 'AbortError');
   fx?.setRelief(1);
   step('graph', 'on');
   const built = await call({ type: 'build', osmText, dem, center }, null, 120000,
@@ -384,7 +391,7 @@ function preloadSoon() {
     $('preload').textContent = 'Préparation du terrain autour du départ…';
     ensureArea(c, areaRadius())
       .then(() => { if (start === c) $('preload').textContent = 'Terrain prêt.'; if (state === 'setup') fx?.clear(900); })
-      .catch(() => { $('preload').textContent = ''; fx?.clear(); });
+      .catch((e) => { if (e.name === 'AbortError') return; $('preload').textContent = ''; fx?.clear(); });
   }, 500);
 }
 

@@ -73,6 +73,9 @@ export function baseStyle(t = tokens()) {
       // Voile couleur du fond, percé d'un disque qui grandit depuis le départ.
       { id: 'fx-veil', type: 'fill', source: 'fx-veil', layout: { visibility: 'none' },
         paint: { 'fill-color': t.land, 'fill-antialias': false } },
+      // Bord du disque : visible même en terrain plat, il montre la progression des altitudes.
+      { id: 'fx-edge', type: 'line', source: 'fx-veil', layout: { visibility: 'none' },
+        paint: { 'line-color': t.ink, 'line-width': 1.5, 'line-opacity': 0.45 } },
       v('park', { type: 'fill', 'source-layer': 'park', filter: polys, paint: { 'fill-color': t.park } }),
       v('wood', { type: 'fill', 'source-layer': 'landcover', filter: ['all', polys, cls('wood', 'grass')],
         paint: { 'fill-color': t.park, 'fill-opacity': 0.7 } }),
@@ -241,26 +244,30 @@ export function tween(ms, onFrame, { ease = (t) => t, alive = () => true } = {})
 
 // --- Animation du chargement du terrain -------------------------------------------------------
 
-const RINGS = 10;          // anneaux de distance autour du départ (serrés près de lui)
-const CELL = 220;          // taille d'une « tuile » de la grille de téléchargement (m)
-const SWEEP_MS = 1100;     // durée d'une vague de la grille
+const RINGS = 10;          // anneaux du réseau autour du départ (serrés près de lui)
+const CELL = 110;          // taille d'une tuile de la grille de téléchargement (m)
+const GRID_MAX = 3200;     // rayon couvert par la grille (m) : au-delà, hors champ pendant le chargement
+const WAVES = 24;          // couches de la vague (une par couronne, vitesse constante)
+const WAVE_MS = 1600;      // période de la vague
+const WAVE_STEP = 45;      // décalage entre deux couronnes (ms) : la vague traverse en ~1 s
 const ringOf = (d, radius) => Math.min(RINGS - 1, Math.floor(Math.sqrt(Math.max(0, d) / radius) * RINGS));
 
 /** Mètres → degrés autour d'une latitude. */
 const mPerDeg = (lat) => [111320 * Math.cos(lat * Math.PI / 180), 111320];
 
-/** Grille de tuiles carrées autour du départ, rangées par anneau. */
+/** Grille de petites tuiles carrées autour du départ, rangées par couronne (pour la vague). */
 function cellGrid([lat, lon], radius) {
   const [kx, ky] = mPerDeg(lat);
-  const n = Math.ceil(radius / CELL), features = [];
+  const R = Math.min(radius, GRID_MAX);
+  const n = Math.ceil(R / CELL), features = [];
   for (let i = -n; i < n; i++) {
     for (let j = -n; j < n; j++) {
       const cx = (i + 0.5) * CELL, cy = (j + 0.5) * CELL, d = Math.hypot(cx, cy);
-      if (d > radius) continue;
-      const g = CELL * 0.06; // joint entre tuiles
+      if (d > R) continue;
+      const g = 5; // joint fin entre tuiles (m)
       const x0 = lon + (i * CELL + g) / kx, x1 = lon + ((i + 1) * CELL - g) / kx;
       const y0 = lat + (j * CELL + g) / ky, y1 = lat + ((j + 1) * CELL - g) / ky;
-      features.push({ type: 'Feature', properties: { r: ringOf(d, radius) },
+      features.push({ type: 'Feature', properties: { w: Math.min(WAVES - 1, Math.floor((d / R) * WAVES)) },
         geometry: { type: 'Polygon', coordinates: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]] } });
     }
   }
@@ -295,8 +302,8 @@ export class TerrainFx {
     this.cache = null; // { key, net, range } : pour rejouer quand le terrain est déjà prêt
     map.addSource('fx-cells', { type: 'geojson', data: EMPTY });
     map.addSource('fx-net', { type: 'geojson', data: EMPTY });
-    for (let i = 0; i < RINGS; i++) {
-      map.addLayer({ id: `fx-cell-${i}`, type: 'fill', source: 'fx-cells', filter: ['==', ['get', 'r'], i],
+    for (let i = 0; i < WAVES; i++) {
+      map.addLayer({ id: `fx-cell-${i}`, type: 'fill', source: 'fx-cells', filter: ['==', ['get', 'w'], i],
         paint: { 'fill-color': t.ink, 'fill-opacity': 0, 'fill-antialias': false } }, before);
     }
     for (let i = 0; i < RINGS; i++) {
@@ -322,44 +329,46 @@ export class TerrainFx {
     this.key = `${center[0].toFixed(5)},${center[1].toFixed(5)},${Math.round(radius)}`;
     this.netReady = false;
     this.map.getSource('fx-net').setData(EMPTY);
-    for (let i = 0; i < RINGS; i++) { this._paint(`fx-net-${i}`, 'line-opacity', 0); this._paint(`fx-cell-${i}`, 'fill-opacity', 0); }
+    for (let i = 0; i < RINGS; i++) this._paint(`fx-net-${i}`, 'line-opacity', 0);
+    for (let i = 0; i < WAVES; i++) this._paint(`fx-cell-${i}`, 'fill-opacity', 0);
     this.map.getSource('fx-cells').setData(cellGrid(center, radius)).then(() => this._sweep());
     // Relief : tout est voilé, le disque grandira avec la progression.
     this.veilR = 0; this.veilTarget = 0;
     this.map.getSource('fx-veil').setData(veil(center, 0, radius * 3));
-    this._show('fx-veil', true); this._show('relief', true); this._show('topo', true);
+    this._show('fx-veil', true); this._show('fx-edge', true); this._show('relief', true); this._show('topo', true);
     this._paint('relief', 'hillshade-exaggeration', 0.55, 0);
     this._paint('topo', 'color-relief-opacity', 0, 0);
   }
 
-  /** Vagues sur la grille de tuiles, du départ vers l'extérieur, jusqu'à l'arrivée du réseau. */
+  /**
+   * Vague continue sur la grille, du départ vers l'extérieur, tant que le réseau n'est pas là :
+   * chaque couronne monte puis redescend, décalée de la précédente (transitions MapLibre).
+   */
   _sweep() {
     const wave = () => {
       if (this.netReady) return;
-      for (let i = 0; i < RINGS; i++) {
-        const d = (i * SWEEP_MS * 0.6) / RINGS;
-        this._later(() => this._paint(`fx-cell-${i}`, 'fill-opacity', 0.13, 160), d);
-        this._later(() => this._paint(`fx-cell-${i}`, 'fill-opacity', 0.04, 700), d + 200);
+      for (let i = 0; i < WAVES; i++) {
+        const d = i * WAVE_STEP;
+        this._later(() => this._paint(`fx-cell-${i}`, 'fill-opacity', 0.15, 380), d);
+        this._later(() => this._paint(`fx-cell-${i}`, 'fill-opacity', 0.035, 900), d + 400);
       }
     };
     wave();
     if (this.rm) return;
     clearInterval(this.sweepTimer);
-    this.sweepTimer = setInterval(wave, SWEEP_MS);
+    this.sweepTimer = setInterval(wave, WAVE_MS);
   }
 
   /** Réseau prêt (GeoJSON en anneaux) : il remplace la grille, vague par vague. */
   _revealNetwork(net) {
     // Au moins une vague complète de la grille, même si les données étaient en cache.
-    const wait = Math.max(0, SWEEP_MS * 0.8 - (performance.now() - this.t0));
+    const wait = Math.max(0, WAVE_MS - (performance.now() - this.t0));
     this._later(() => {
       this.netReady = true;
       clearInterval(this.sweepTimer);
       this.map.getSource('fx-net').setData(net).then(() => {
-        for (let i = 0; i < RINGS; i++) {
-          this._paint(`fx-cell-${i}`, 'fill-opacity', 0, 380, i * 70);
-          this._paint(`fx-net-${i}`, 'line-opacity', 0.6, 380, i * 70);
-        }
+        for (let i = 0; i < WAVES; i++) this._paint(`fx-cell-${i}`, 'fill-opacity', 0, 450, i * WAVE_STEP);
+        for (let i = 0; i < RINGS; i++) this._paint(`fx-net-${i}`, 'line-opacity', 0.6, 420, i * 80);
       });
     }, this.rm ? 0 : wait);
   }
@@ -390,7 +399,7 @@ export class TerrainFx {
   }
   _setVeil(r) {
     this.veilR = r;
-    if (r >= this.radius * 1.14) { this._show('fx-veil', false); return; }
+    if (r >= this.radius * 1.14) { this._show('fx-veil', false); this._show('fx-edge', false); return; }
     this.map.getSource('fx-veil').setData(veil(this.center, r, this.radius * 3));
   }
 
@@ -418,11 +427,9 @@ export class TerrainFx {
     this._stopTimers();
     const job = ++this.job;
     this.raf = 0;
-    this._show('fx-veil', false);
-    for (let i = 0; i < RINGS; i++) {
-      this._paint(`fx-net-${i}`, 'line-opacity', 0, 600, delay);
-      this._paint(`fx-cell-${i}`, 'fill-opacity', 0, 400, delay);
-    }
+    this._show('fx-veil', false); this._show('fx-edge', false);
+    for (let i = 0; i < RINGS; i++) this._paint(`fx-net-${i}`, 'line-opacity', 0, 600, delay);
+    for (let i = 0; i < WAVES; i++) this._paint(`fx-cell-${i}`, 'fill-opacity', 0, 400, delay);
     this._paint('relief', 'hillshade-exaggeration', 0, 700, delay);
     this._paint('topo', 'color-relief-opacity', 0, 700, delay);
     setTimeout(() => {

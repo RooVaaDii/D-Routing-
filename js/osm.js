@@ -42,12 +42,16 @@ export function slimOsm(text) {
 }
 
 /** Récupère le JSON brut (texte) en essayant plusieurs serveurs Overpass. */
-export async function fetchOsm(bbox, { onStatus, timeoutMs = 35000 } = {}) {
+export async function fetchOsm(bbox, { onStatus, timeoutMs = 35000, signal } = {}) {
   const body = 'data=' + encodeURIComponent(overpassQuery(bbox));
   let lastErr;
   for (const url of OVERPASS_ENDPOINTS) {
     const host = new URL(url).host;
+    if (signal?.aborted) break;
     const ctrl = new AbortController();
+    // Annulation extérieure (zone devenue inutile) : on coupe tout de suite.
+    const stop = () => ctrl.abort();
+    signal?.addEventListener('abort', stop);
     const t0 = performance.now();
     let received = 0;
     const tick = setInterval(() => {
@@ -91,7 +95,9 @@ export async function fetchOsm(bbox, { onStatus, timeoutMs = 35000 } = {}) {
     } finally {
       clearTimeout(timer);
       clearInterval(tick);
+      signal?.removeEventListener('abort', stop);
     }
   }
+  if (signal?.aborted) throw new DOMException('Téléchargement annulé', 'AbortError');
   throw new Error(`Impossible de récupérer les données OSM (${lastErr?.message ?? 'erreur'}). Réessaie dans un moment ou avec une distance plus courte.`);
 }
