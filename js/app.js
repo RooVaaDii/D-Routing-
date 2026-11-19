@@ -4,7 +4,8 @@ import { fetchOsm } from './osm.js';
 import { loadDem, browserDecode, inFrance, loadIgnDem, validateIgn } from './elevation.js';
 import { drawProfile, indexAt } from './profile.js';
 import { toGpx, downloadText } from './gpx.js';
-import { findCovering, save } from './cache.js';
+import { findCovering, save, onCacheEvent } from './cache.js';
+import { diag } from './diag.js';
 import { maplibregl, createMap, tokens, RevealLine, TerrainFx, interleavedToLngLat, tween } from './map.js';
 
 const $ = (id) => document.getElementById(id);
@@ -14,12 +15,20 @@ const T = tokens();
 const fmtKm = (m) => (m / 1000).toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const fmtInt = (x) => Math.round(x).toLocaleString('fr-FR');
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Rejette avec un message clair si la promesse n'aboutit pas à temps (rien ne doit bloquer). */
+const withTimeout = (p, ms, msg) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(msg)), ms))]);
 
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch((e) => diag.log(`service worker : ${e.message}`));
+onCacheEvent((e) => diag.log(`cache ${e.kind} ${e.op} : ${e.ok ? e.note || 'ok' : 'échec, on continue sans (' + e.note + ')'} en ${Math.round(e.ms)} ms`));
 
 // --- Carte -------------------------------------------------------------------
 const map = createMap('map', { center: [2.3522, 48.8566], zoom: 13 });
 const mapReady = new Promise((resolve) => map.once('load', resolve));
+let mapLoaded = false;
+mapReady.then(() => { mapLoaded = true; });
+// La carte n'est qu'un décor : si elle tarde (réseau, WebGL), le calcul continue sans elle.
+const mapOrTimeout = () => Promise.race([mapReady, wait(4000)]);
+map.on('error', (e) => diag.log(`carte : ${e.error?.message || 'erreur'}`));
 const llOf = (lat, lon) => [lon, lat];
 
 const pin = (cls, html = '') => { const el = document.createElement('div'); el.className = cls; el.innerHTML = html; return el; };
@@ -233,25 +242,48 @@ if (prefs.street === false) $('optStreet').checked = false;
 updateGoal(); syncMode();
 
 // --- Worker ---------------------------------------------------------------------------
-const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
-let reqId = 0;
+// Si le worker plante (mémoire sur iPhone) ou ne répond plus, on le recrée : le graphe est
+// alors perdu et la zone sera rechargée (depuis le cache local si possible).
+let worker = null, reqId = 0;
 const pending = new Map();
-worker.onmessage = (ev) => {
-  const m = ev.data;
-  const p = pending.get(m.id);
-  if (!p) return;
-  if (m.type === 'progress') return p.onProgress?.(m);
-  pending.delete(m.id);
-  if (m.type === 'error') p.reject(new Error(m.message)); else p.resolve(m);
-};
-const call = (msg, onProgress) => new Promise((resolve, reject) => {
+function startWorker(reason) {
+  if (worker) {
+    worker.terminate();
+    for (const p of pending.values()) p.reject(new Error(reason));
+    pending.clear();
+    area = null; loading = null;
+    diag.log(`worker redémarré : ${reason}`);
+  }
+  worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  worker.onmessage = (ev) => {
+    const m = ev.data;
+    const p = pending.get(m.id);
+    if (!p) return;
+    if (m.type === 'progress') return p.onProgress?.(m);
+    pending.delete(m.id);
+    if (m.type === 'error') p.reject(new Error(m.message)); else p.resolve(m);
+  };
+  worker.onerror = (e) => { e.preventDefault?.(); startWorker(`le calcul s'est arrêté (${e.message || 'erreur'}). Réessaie.`); };
+}
+startWorker();
+/** Appel au worker, avec délai maximal : au-delà, le worker est recréé et l'appel échoue. */
+const call = (msg, onProgress, ms, msgTimeout) => new Promise((resolve, reject) => {
   const id = ++reqId;
-  pending.set(id, { resolve, reject, onProgress });
+  const timer = setTimeout(() => startWorker(msgTimeout), ms);
+  const done = (f) => (x) => { clearTimeout(timer); f(x); };
+  pending.set(id, { resolve: done(resolve), reject: done(reject), onProgress });
   worker.postMessage({ ...msg, id });
 });
 
 // --- Chargement du terrain (avec cache et préchargement) -----------------------------------
+const STEP_LABEL = { osm: 'Réseau OpenStreetMap', dem: 'Altitudes', graph: 'Graphe', search: 'Recherche' };
+const stepT = {}; // début de l'étape en cours (ms), pour le suivi de l'attente
 function step(name, st, text = '') {
+  if (st === 'on' && !stepT[name]) stepT[name] = performance.now();
+  if (st !== 'on' && stepT[name]) {
+    diag.log(`${STEP_LABEL[name]} : ${((performance.now() - stepT[name]) / 1000).toFixed(1)} s${text ? ` (${text})` : ''}`);
+    delete stepT[name];
+  }
   const li = $('steps').querySelector(`[data-step=${name}]`);
   li.classList.toggle('on', st === 'on');
   li.classList.toggle('done', st === 'done');
@@ -297,27 +329,30 @@ async function loadArea(center, r) {
   const bbox = bboxAround(center[0], center[1], r);
   const t0 = performance.now();
   step('osm', 'on'); step('dem', 'on'); step('graph', '');
-  await mapReady;
-  fx.begin(center, r);
+  fx?.begin(center, r);
 
   const osmP = (async () => {
     const hit = await findCovering('osm', bbox);
-    if (hit) { step('osm', 'done', 'en cache'); fx.network(hit.data); return hit.data; }
+    if (hit) { step('osm', 'done', 'en cache'); fx?.network(hit.data); return hit.data; }
     const text = await fetchOsm(bbox, { onStatus: (t) => step('osm', 'on', t.toLowerCase()) });
     step('osm', 'done', `${(text.length / 1e6).toFixed(1)} Mo`);
-    fx.network(text);
+    fx?.network(text);
     save('osm', bbox, text);
     return text;
   })();
 
   const demP = (async () => {
-    const terrarium = await loadDem(bbox, browserDecode, { onProgress: (f) => { step('dem', 'on', `${Math.round(f * 100)} %`); fx.setRelief(f * 0.9); } });
-    fx.setRange(...elevRange(terrarium));
+    const terrarium = await withTimeout(
+      loadDem(bbox, browserDecode, { onProgress: (f) => { step('dem', 'on', `${Math.round(f * 100)} %`); fx?.setRelief(f * 0.9); } }),
+      60000, 'Les altitudes (Terrarium) ne répondent pas. Vérifie la connexion et réessaie.');
+    fx?.setRange(...elevRange(terrarium));
     if (inFrance(bbox)) {
       let ign = await findCovering('ign', bbox);
       let dem = ign ? { ...ign.data, fallback: terrarium } : null;
       if (!dem) {
-        const raw = await loadIgnDem(bbox).catch((e) => { console.warn('IGN indisponible', e); return null; });
+        step('dem', 'on', 'IGN');
+        const raw = await withTimeout(loadIgnDem(bbox), 20000, 'IGN : délai dépassé')
+          .catch((e) => { diag.log(`IGN indisponible, repli Terrarium (${e.message})`); return null; });
         dem = raw && validateIgn(raw, terrarium);
         if (dem) { const { fallback, ...store } = dem; save('ign', bbox, store); }
       }
@@ -329,9 +364,10 @@ async function loadArea(center, r) {
   })();
 
   const [osmText, dem] = await Promise.all([osmP, demP]);
-  fx.setRelief(1);
+  fx?.setRelief(1);
   step('graph', 'on');
-  const built = await call({ type: 'build', osmText, dem, center });
+  const built = await call({ type: 'build', osmText, dem, center }, null, 120000,
+    'La préparation du graphe prend trop de temps. Essaie une distance plus courte.');
   if (!built.nodes) throw new Error('Aucune voie praticable dans cette zone.');
   step('graph', 'done', `${fmtInt(built.nodes)} nœuds`);
   console.info(`Zone prête en ${Math.round(performance.now() - t0)} ms`);
@@ -403,6 +439,7 @@ async function drainQueue(maxMs) {
  */
 async function eliminate(routes) {
   queue.length = 0; clearInterval(pump); pump = 0;
+  if (!alts.length) return; // carte pas encore prête : pas d'animation
   const shown = [...ghosts.filter((g) => g.shown || g.busy), ...bests];
   for (let i = shown.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shown[i], shown[j]] = [shown[j], shown[i]]; }
   const gap = reduceMotion ? 0 : Math.min(70, 1100 / Math.max(1, shown.length));
@@ -460,6 +497,7 @@ let current = 0;
 let goal = null; // objectif dénivelé de la dernière génération
 const BUDGET = 3600;
 
+let genToken = 0;
 async function generate() {
   if (!start) return hint('Choisis d’abord un départ : adresse, position, ou touche la carte.', true);
   const tol = parseFloat(val('tol'));
@@ -469,19 +507,24 @@ async function generate() {
   const dmin = upGoal ? 1 : d * (1 - tol), dmax = upGoal ? upMaxKm() : d * (1 + tol);
   const mode = val('mode');
   savePrefs();
+  hint('');
   setState('search');
   $('searchTitle').textContent = 'Chargement du terrain';
   $('searchPct').textContent = '';
   step('search', '', '');
   liveBest = 0; setLive(0, null); $('liveBest').textContent = '—'; $('bar').style.width = '0';
-  await mapReady;
+  const my = ++genToken;
+  const cancelled = () => my !== genToken;
+  watchWait(my);
+  await mapOrTimeout();
+  if (cancelled()) return;
   clearRoute(); clearSearch();
   // On part serré sur le départ…
   flyToVisible(llOf(...start), 15, 700);
 
   try {
     const radius = areaRadius();
-    if (covers(area, start, radius) && !reduceMotion) {
+    if (covers(area, start, radius) && !reduceMotion && fx) {
       // Terrain déjà prêt (préchargé) : la séquence de chargement est rejouée en accéléré.
       step('osm', 'on'); step('dem', 'on'); step('graph', '');
       await wait(450);
@@ -490,7 +533,8 @@ async function generate() {
       await replay;
     }
     await ensureArea(start, radius);
-    fx.clear();
+    if (cancelled()) return;
+    fx?.clear();
     $('searchTitle').textContent = 'Recherche du meilleur parcours';
     step('search', 'on');
     // … puis on dézoome progressivement pendant la recherche.
@@ -508,6 +552,7 @@ async function generate() {
       budgetMs: BUDGET, seed: (Math.random() * 2 ** 31) | 0,
     };
     const res = await call({ type: 'solve', params }, (p) => {
+      if (cancelled()) return;
       if (p.phase === 'search') {
         for (const c of p.candidates || []) enqueue(c.coords);
         if (p.best) showBest(p.best.coords);
@@ -516,7 +561,8 @@ async function generate() {
         $('bar').style.width = `${pct}%`;
         $('searchPct').textContent = `${pct} %`;
       } else if (p.phase === 'climbs-explored') explored = p.candidates;
-    });
+    }, BUDGET + 30000, 'La recherche ne répond plus. Réessaie.');
+    if (cancelled()) return;
     // Mode « côte » : la recherche est instantanée, on rejoue les côtes examinées.
     if (explored.length && !reduceMotion) {
       const D = 1800, k = explored.length;
@@ -538,18 +584,54 @@ async function generate() {
     $('bar').style.width = '100%';
     $('searchTitle').textContent = results.length > 1 ? `${results.length} parcours retenus` : 'Parcours retenu';
     await eliminate(results);
+    if (cancelled()) return;
     clearSearch(0);
     setState('result');
     renderVariants();
     await show(0, true);
   } catch (e) {
+    if (cancelled()) return;
     console.error(e);
+    diag.log(`erreur : ${e.message}`);
     clearSearch();
     fx?.clear();
     setState('setup');
     hint(e.message, true);
+  } finally {
+    if (!cancelled()) watchWait(0);
   }
 }
+
+// --- Suivi de l'attente : ce que l'on attend, depuis combien de temps, et « Annuler » ------------
+const WAIT_NOTE = {
+  osm: (s) => s > 40 ? 'Les serveurs OpenStreetMap sont lents : on essaie les serveurs de secours.' : 'Téléchargement du réseau OpenStreetMap…',
+  dem: () => 'Téléchargement des altitudes…',
+  graph: () => 'Préparation du réseau pour la recherche…',
+  search: () => 'Recherche en cours…',
+};
+let waitTimer = 0;
+function watchWait(token) {
+  clearInterval(waitTimer);
+  $('waitNote').hidden = true;
+  if (!token) return;
+  waitTimer = setInterval(() => {
+    if (token !== genToken || state !== 'search') { clearInterval(waitTimer); return; }
+    const now = performance.now();
+    const [name, t0] = Object.entries(stepT).sort((a, b) => a[1] - b[1])[0] || [];
+    const secs = t0 ? Math.round((now - t0) / 1000) : 0;
+    $('waitNote').hidden = !name || secs < 6;
+    if (name && secs >= 6) $('waitNote').textContent = `${WAIT_NOTE[name](secs)} ${secs} s`;
+  }, 500);
+}
+$('cancel').onclick = () => {
+  genToken++;
+  watchWait(0);
+  clearSearch(); fx?.clear(); clearRoute();
+  for (const k of Object.keys(stepT)) delete stepT[k];
+  setState('setup');
+  hint('Génération annulée. Le terrain continue de se charger en arrière-plan.');
+  diag.log('génération annulée');
+};
 
 $('go').onclick = () => generate();
 $('again').onclick = () => generate();
@@ -629,6 +711,7 @@ function countUp(el, to, fmt) {
 }
 
 async function drawRoute(r, animate, token) {
+  if (!route) { profileGeom = drawProfile($('profile'), r); return; } // carte pas encore prête
   route.clear();
   for (const f of flags) f.remove();
   flags = [];
