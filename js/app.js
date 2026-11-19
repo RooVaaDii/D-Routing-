@@ -77,6 +77,7 @@ function setState(s) {
   for (const v of ['setup', 'search', 'result']) {
     const el = $('view-' + v);
     el.hidden = v !== s;
+    if (v === s) el.scrollTop = 0;
     if (v === s && !reduceMotion) { el.classList.remove('enter'); void el.offsetWidth; el.classList.add('enter'); }
   }
 }
@@ -504,7 +505,8 @@ function renderVariants() {
   results.forEach((r, i) => {
     const b = document.createElement('button');
     b.setAttribute('role', 'tab');
-    b.textContent = `${String.fromCharCode(65 + i)} · +${fmtInt(r.up)} m`;
+    b.innerHTML = `<span class="k">${String.fromCharCode(65 + i)}</span>+${fmtInt(r.up)} m`;
+    b.setAttribute('aria-label', `Variante ${String.fromCharCode(65 + i)}, ${fmtInt(r.up)} mètres de D+, ${fmtKm(r.distance)} km`);
     b.onclick = () => show(i, true);
     box.appendChild(b);
   });
@@ -522,12 +524,13 @@ async function show(i, animate) {
 
   const climb = $('rClimb');
   climb.hidden = false;
+  // Côtes de la séance : une ligne par côte (montées, longueur, pente, gain).
+  const pct = (g) => `${(g * 100).toFixed(1).replace('.', ',')} %`;
+  const row = (c) => `<li><b>×${c.reps}</b><span>${fmtInt(c.length)} m à ${pct(c.grade)}</span><span class="g">+${fmtInt(c.gain)} m</span></li>`;
   if (r.kind === 'repeat') {
-    const c = r.climb;
-    climb.textContent = `${c.reps} × ${fmtInt(c.length)} m à ${(c.grade * 100).toFixed(1).replace('.', ',')} % (+${fmtInt(c.gain)} m par montée), accès ${fmtKm(c.approach)} km.`;
+    climb.innerHTML = row(r.climb) + `<li class="sub"><span>Accès depuis le départ : ${fmtKm(r.climb.approach)} km, aller et retour</span></li>`;
   } else if (r.kind === 'circuit') {
-    climb.textContent = `${r.circuit.length} côte${r.circuit.length > 1 ? 's' : ''} × ${r.circuit[0].reps} : ` +
-      r.circuit.map((c) => `${fmtInt(c.length)} m (+${fmtInt(c.gain)} m)`).join(' · ');
+    climb.innerHTML = r.circuit.map(row).join('');
   } else climb.hidden = true;
 
   // Objectif dénivelé hors d'atteinte : on le dit, sans détour.
@@ -546,9 +549,9 @@ async function show(i, animate) {
     r.kind === 'repeat' ? ['Répétitions', `${r.climb.reps}`] : ['Montées', `${r.bigClimbs}`],
   ];
   $('rFacts').innerHTML = facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join('');
-  const notes = [`Réseau © OpenStreetMap`, `altitude ${demSource}`];
-  if (r.kind === 'loop' && r.overlap > 0.05) notes.push(`${Math.round(r.overlap * 100)} % du tracé emprunté deux fois`);
-  $('source').textContent = notes.join(' · ');
+  let note = `Réseau OpenStreetMap, altitude ${demSource}.`;
+  if (r.kind === 'loop' && r.overlap > 0.05) note = `${Math.round(r.overlap * 100)} % du tracé est emprunté deux fois. ` + note;
+  $('source').textContent = note;
 
   const token = ++animToken;
   await drawRoute(r, animate && !reduceMotion, token);
