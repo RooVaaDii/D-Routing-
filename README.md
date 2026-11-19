@@ -24,7 +24,7 @@ En ligne : https://roovaadii.github.io/D-Routing-/
 
 | Besoin | Source |
 |---|---|
-| Réseau routes et chemins | OpenStreetMap via l'API Overpass (plusieurs serveurs en secours) |
+| Réseau routes et chemins | OpenStreetMap via les tuiles vectorielles OpenFreeMap (zoom 14, couche *transportation*), topologie recalculée (`js/ofmnet.js`) ; secours : API Overpass par tuiles |
 | Altitude en France | IGN RGE ALTI (modèle du **sol nu**, licence ouverte), via le WMS de la Géoplateforme |
 | Altitude ailleurs / secours | Tuiles Terrarium (Mapzen / AWS Open Data : SRTM, etc.) |
 | Géocodage | Nominatim (OpenStreetMap) |
@@ -70,5 +70,6 @@ node goal.mjs                   # objectif dénivelé (relief synthétique)
 node goal-paris.mjs             # objectif dénivelé (relief de Paris)
 node climbs-limit.mjs           # limite du nombre de montées
 node uturns.mjs                 # pas de demi-tour en impasse
+node ofmnet.mjs [lat,lon] [m]   # réseau depuis les tuiles OpenFreeMap (vraies données)
 node e2e.cjs <dossier>          # interface complète dans Chromium (Overpass simulé)
 ```

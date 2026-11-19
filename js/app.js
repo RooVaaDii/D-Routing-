@@ -331,6 +331,25 @@ function ensureArea(center, radius, { force = true } = {}) {
 }
 let wanted = null; // dernière zone demandée pendant un téléchargement
 
+// Réseau depuis les tuiles OpenFreeMap (worker dédié : téléchargement, décodage, topologie).
+let ofmWorker = null, ofmReq = 0;
+function ofmNetwork(bbox, onProgress) {
+  if (!ofmWorker) ofmWorker = new Worker(new URL('./ofmnet.js', import.meta.url), { type: 'module' });
+  const id = ++ofmReq;
+  return new Promise((resolve, reject) => {
+    const onMsg = (ev) => {
+      const m = ev.data;
+      if (m.id !== id) return;
+      if (m.type === 'progress') return onProgress(m.done, m.total);
+      ofmWorker.removeEventListener('message', onMsg);
+      if (m.type === 'done') resolve(m); else reject(new Error(m.message));
+    };
+    ofmWorker.addEventListener('message', onMsg);
+    ofmWorker.onerror = (e) => { ofmWorker.terminate(); ofmWorker = null; reject(new Error(e.message || 'worker OpenFreeMap arrêté')); };
+    ofmWorker.postMessage({ id, bbox });
+  });
+}
+
 /** Plage d'altitude utile d'une grille (2e – 98e centile), pour la teinte du relief. */
 function elevRange(dem) {
   const d = dem.data, stride = Math.max(1, Math.floor(d.length / 20000)), a = [];
@@ -350,14 +369,29 @@ async function loadArea(center, r, signal) {
     // Ancienne zone complète encore en cache (versions précédentes) : réutilisée telle quelle.
     const hit = await findCovering('osm', bbox);
     if (hit) { step('osm', 'done', 'en cache'); fx?.network(hit.data); return hit.data; }
-    let tilesTxt = '';
-    const { text, tiles, cached } = await loadOsmTiles(bbox, center, {
-      signal,
-      log: (m) => diag.log(`OSM ${m}`),
-      onProgress: ({ done, total }) => { tilesTxt = `${done}/${total} tuiles`; if (live() && done < total) step('osm', 'on', tilesTxt); },
-      onStatus: (t) => { if (live()) step('osm', 'on', `${tilesTxt} · ${t.toLowerCase()}`); },
-    });
-    step('osm', 'done', cached === tiles ? 'en cache' : `${tiles} tuiles`);
+    let text;
+    try {
+      // 1) Tuiles vectorielles OpenFreeMap : CDN rapide, en cache, sans limite de requêtes.
+      const t0 = performance.now();
+      const res = await withTimeout(ofmNetwork(bbox, (done, total) => { if (live()) step('osm', 'on', `${done}/${total} tuiles`); }),
+        90000, 'OpenFreeMap : délai dépassé');
+      text = res.text;
+      diag.log(`réseau OpenFreeMap : ${res.tiles} tuiles, ${res.ways} voies, ${(text.length / 1e6).toFixed(1)} Mo en ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+      step('osm', 'done', `${res.tiles} tuiles`);
+    } catch (e) {
+      // 2) Secours : API Overpass, par tuiles.
+      if (!live()) throw e;
+      diag.log(`réseau OpenFreeMap indisponible (${e.message}) : secours Overpass`);
+      let tilesTxt = '';
+      const r = await loadOsmTiles(bbox, center, {
+        signal,
+        log: (m) => diag.log(`OSM ${m}`),
+        onProgress: ({ done, total }) => { tilesTxt = `${done}/${total} tuiles`; if (live() && done < total) step('osm', 'on', tilesTxt); },
+        onStatus: (t) => { if (live()) step('osm', 'on', `${tilesTxt} · ${t.toLowerCase()}`); },
+      });
+      text = r.text;
+      step('osm', 'done', r.cached === r.tiles ? 'en cache' : `${r.tiles} tuiles`);
+    }
     fx?.network(text);
     return text;
   })();
