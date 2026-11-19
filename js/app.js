@@ -58,11 +58,14 @@ const boundsAround = ([lat, lon], r) => {
 };
 
 // Couches animées (créées quand le style est prêt)
-let fx = null, ghosts = [], bests = [], route = null;
+let fx = null, ghosts = [], bests = [], alts = [], route = null;
+const GHOSTS = 18;          // options testées gardées à l'écran pendant la recherche
+const ALT_OPACITY = 0.4;    // variantes non sélectionnées, en fin sur la carte
 mapReady.then(() => {
   fx = new TerrainFx(map, T, { reduceMotion });
-  for (let i = 0; i < 16; i++) ghosts.push(Object.assign(new RevealLine(map, `ghost-${i}`, { color: T.ink, width: 1.6, opacity: 0.38 }), { busy: false }));
+  for (let i = 0; i < GHOSTS; i++) ghosts.push(Object.assign(new RevealLine(map, `ghost-${i}`, { color: T.ink, width: 1.5, opacity: 0.5 }), { busy: false, shown: false, t: 0 }));
   for (let i = 0; i < 2; i++) bests.push(new RevealLine(map, `best-${i}`, { color: T.accent, width: 3, opacity: 0.95 }));
+  for (let i = 0; i < 3; i++) alts.push(new RevealLine(map, `alt-${i}`, { color: T.ink, width: 2.2, opacity: 0.7, casing: { color: T.bg, width: 5 } }));
   route = new RevealLine(map, 'route', { color: T.accent, width: 4.5, casing: { color: T.bg, width: 9 } });
 });
 
@@ -282,6 +285,14 @@ function ensureArea(center, radius) {
   return z.promise;
 }
 
+/** Plage d'altitude utile d'une grille (2e – 98e centile), pour la teinte du relief. */
+function elevRange(dem) {
+  const d = dem.data, stride = Math.max(1, Math.floor(d.length / 20000)), a = [];
+  for (let i = 0; i < d.length; i += stride) if (Number.isFinite(d[i])) a.push(d[i]);
+  a.sort((x, y) => x - y);
+  return a.length ? [a[Math.floor(a.length * 0.02)], a[Math.floor(a.length * 0.98)]] : [0, 100];
+}
+
 async function loadArea(center, r) {
   const bbox = bboxAround(center[0], center[1], r);
   const t0 = performance.now();
@@ -301,6 +312,7 @@ async function loadArea(center, r) {
 
   const demP = (async () => {
     const terrarium = await loadDem(bbox, browserDecode, { onProgress: (f) => { step('dem', 'on', `${Math.round(f * 100)} %`); fx.setRelief(f * 0.9); } });
+    fx.setRange(...elevRange(terrarium));
     if (inFrance(bbox)) {
       let ign = await findCovering('ign', bbox);
       let dem = ign ? { ...ign.data, fallback: terrarium } : null;
@@ -352,27 +364,60 @@ async function revealLine(line, coords, ms, token = searchToken) {
 }
 
 // File d'attente : les candidats arrivent par paquets, on les dessine à un rythme régulier.
+// Ils restent affichés (en fin) et s'accumulent ; les plus anciens laissent la place.
 const queue = [];
 let pump = 0, alive = 0;
 function enqueue(coords) { if (queue.length < 40) queue.push(coords); if (!pump) pump = setInterval(drawNext, 70); }
 function drawNext() {
   if (!queue.length) { clearInterval(pump); pump = 0; return; }
-  const slot = ghosts.find((g) => !g.busy);
-  if (!slot || alive > 14) return;
-  const coords = interleavedToLngLat(queue.shift());
+  if (alive >= 4) return;
   const token = searchToken;
-  slot.busy = true; alive++;
-  revealLine(slot, coords, 650, token).then(() => {
+  const coords = interleavedToLngLat(queue.shift());
+  const run = (slot) => {
     if (token !== searchToken) return;
-    slot.fade(0, reduceMotion ? 0 : 1600);
-    setTimeout(() => { alive = Math.max(0, alive - 1); }, 400);
-    setTimeout(() => { if (token === searchToken) slot.busy = false; }, reduceMotion ? 0 : 1650);
-  });
+    revealLine(slot, coords, 650, token).then((done) => {
+      alive = Math.max(0, alive - 1);
+      if (!done || token !== searchToken) return;
+      slot.fade(0.2, reduceMotion ? 0 : 900);
+      Object.assign(slot, { busy: false, shown: true, t: performance.now() });
+    });
+  };
+  let slot = ghosts.find((g) => !g.busy && !g.shown);
+  alive++;
+  if (slot) { slot.busy = true; run(slot); return; }
+  // Toutes les places sont prises : la plus ancienne option s'efface.
+  slot = ghosts.filter((g) => !g.busy).sort((p, q) => p.t - q.t)[0];
+  if (!slot) { alive--; queue.unshift(coords.flatMap(([lo, la]) => [la, lo])); return; }
+  slot.busy = true; slot.shown = false;
+  slot.fade(0, reduceMotion ? 0 : 220);
+  setTimeout(() => run(slot), reduceMotion ? 0 : 240);
 }
 async function drainQueue(maxMs) {
   const t0 = performance.now();
   while ((queue.length || alive > 0) && performance.now() - t0 < maxMs) await wait(60);
 }
+
+/**
+ * Fin de recherche : les options testées s'éliminent une à une pendant que les trois
+ * parcours retenus se dessinent ; il ne reste qu'eux.
+ */
+async function eliminate(routes) {
+  queue.length = 0; clearInterval(pump); pump = 0;
+  const shown = [...ghosts.filter((g) => g.shown || g.busy), ...bests];
+  for (let i = shown.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [shown[i], shown[j]] = [shown[j], shown[i]]; }
+  const gap = reduceMotion ? 0 : Math.min(70, 1100 / Math.max(1, shown.length));
+  shown.forEach((g, i) => g.fade(0, reduceMotion ? 0 : 300, 150 + i * gap));
+  const token = ++altToken;
+  routes.slice(0, 3).forEach((r, k) => {
+    const coords = Array.from(r.lat, (la, j) => [r.lon[j], la]);
+    setTimeout(() => {
+      if (token !== altToken) return;
+      alts[k].set(coords).then(() => tween(reduceMotion ? 0 : 900, (x) => alts[k].show(x), { ease: easeOut2, alive: () => token === altToken }));
+    }, reduceMotion ? 0 : 250 + k * 200);
+  });
+  await wait(reduceMotion ? 0 : Math.max(150 + shown.length * gap + 300, 250 + 2 * 200 + 900) + 150);
+}
+let altToken = 0;
 
 let bestKey = '', bestIdx = 0;
 function showBest(coords) {
@@ -391,12 +436,13 @@ function clearSearch(ms = 0) {
   const token = searchToken;
   setTimeout(() => {
     if (token !== searchToken) return;
-    for (const g of [...ghosts, ...bests]) { g.clear(); g.busy = false; }
+    for (const g of [...ghosts, ...bests]) { g.clear(); g.busy = false; g.shown = false; }
   }, (reduceMotion ? 0 : ms) + 50);
 }
 function clearRoute() {
-  animToken++;
+  animToken++; altToken++;
   route?.clear();
+  for (const a of alts) a.clear();
   for (const f of flags) f.remove();
   flags = [];
   cursor.remove();
@@ -431,10 +477,19 @@ async function generate() {
   await mapReady;
   clearRoute(); clearSearch();
   // On part serré sur le départ…
-  flyToVisible(llOf(...start), 16, 700);
+  flyToVisible(llOf(...start), 15, 700);
 
   try {
-    await ensureArea(start, areaRadius());
+    const radius = areaRadius();
+    if (covers(area, start, radius) && !reduceMotion) {
+      // Terrain déjà prêt (préchargé) : la séquence de chargement est rejouée en accéléré.
+      step('osm', 'on'); step('dem', 'on'); step('graph', '');
+      await wait(450);
+      const replay = fx.replay(area.center, area.radius);
+      setTimeout(() => step('osm', 'done', 'en cache'), 900);
+      await replay;
+    }
+    await ensureArea(start, radius);
     fx.clear();
     $('searchTitle').textContent = 'Recherche du meilleur parcours';
     step('search', 'on');
@@ -481,7 +536,9 @@ async function generate() {
     if (!results.length) throw new Error('Aucun parcours trouvé ici. Essaie une autre distance, une autre surface ou un autre départ.');
     step('search', 'done', `${(res.result.timeMs / 1000).toFixed(1)} s`);
     $('bar').style.width = '100%';
-    clearSearch(500);
+    $('searchTitle').textContent = results.length > 1 ? `${results.length} parcours retenus` : 'Parcours retenu';
+    await eliminate(results);
+    clearSearch(0);
     setState('result');
     renderVariants();
     await show(0, true);
@@ -553,6 +610,8 @@ async function show(i, animate) {
   if (r.kind === 'loop' && r.overlap > 0.05) note = `${Math.round(r.overlap * 100)} % du tracé est emprunté deux fois. ` + note;
   $('source').textContent = note;
 
+  // Les autres variantes restent en fin sur la carte, sous le parcours choisi.
+  alts.forEach((line, k) => line.fade(k === i || k >= results.length ? 0 : ALT_OPACITY, reduceMotion ? 0 : 400));
   const token = ++animToken;
   await drawRoute(r, animate && !reduceMotion, token);
 }

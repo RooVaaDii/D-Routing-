@@ -13,7 +13,11 @@ En ligne : https://roovaadii.github.io/D-Routing-/
   - *Répétitions de côte* : en « Auto », la meilleure côte du coin, montée autant de fois que la distance (ou le dénivelé visé) le demande ; avec N montées par côte, un circuit de plusieurs côtes, chacune montée N fois.
 - **Options** (pondérations, pas interdictions) : remonter une même côte 1 fois / 2 / 3 / sans limite (parcours varié), ne pas repasser par le même tronçon, ne pas revenir sur une rue déjà prise (même nom OSM, même sur une autre portion), éviter les escaliers. Surface : mixte, route ou chemin.
 - **Résultat** : D+ / D−, altitude min–max, D+/km, nombre de montées, profil altimétrique interactif synchronisé avec la carte, 3 variantes, export **GPX**.
-- **Recherche visible** (rendu GPU) : pendant le chargement, le réseau OSM apparaît en anneaux autour du départ et le relief se dessine ; puis la carte dézoome pendant l'optimisation, les parcours candidats se dessinent progressivement, le meilleur en couleur, et le gagnant se trace en même temps que le profil.
+- **Recherche visible** (rendu GPU, MapLibre) :
+  - *Réseau OpenStreetMap* : une grille de tuiles autour du départ se balaie en vagues pendant le téléchargement, puis le réseau la remplace, anneau par anneau ;
+  - *Altitudes* : un disque grandit depuis le départ avec la progression et dévoile le relief (ombrage + teinte d'altitude) ;
+  - si le terrain est déjà préchargé, cette séquence est rejouée en accéléré ;
+  - *Recherche* : la carte dézoome, les options testées se dessinent et s'accumulent, le meilleur du moment en orange ; à la fin, elles s'éliminent une à une jusqu'aux 3 parcours retenus, puis le choisi se trace avec le profil (les deux autres restent en fin sur la carte).
 - **Rapide** : le terrain est préchargé dès que le départ est placé ; réseau OSM et altitudes IGN gardés en cache (IndexedDB), tuiles, polices de carte et tuiles d'altitude en cache (service worker).
 
 ## Données (gratuites / ouvertes)

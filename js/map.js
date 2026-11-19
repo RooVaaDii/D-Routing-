@@ -36,6 +36,13 @@ const notTunnel = ['!=', ['get', 'brunnel'], 'tunnel'];
 const zw = (...stops) => ['interpolate', ['exponential', 1.5], ['zoom'], ...stops];
 const name = ['coalesce', ['get', 'name:fr'], ['get', 'name'], ['get', 'name:latin']];
 
+/** Teinte d'altitude : transparente en bas, encre légère en haut (une seule couleur). */
+export function topoRamp(t, lo, hi) {
+  const span = Math.max(hi - lo, 10);
+  return ['interpolate', ['linear'], ['elevation'],
+    lo, rgba(t.ink, 0), lo + span * 0.5, rgba(t.ink, 0.12), hi, rgba(t.ink, 0.3)];
+}
+
 /** Style vectoriel maison : fond clair, rues grises, eau et parcs discrets. */
 export function baseStyle(t = tokens()) {
   const v = (id, layer) => ({ id, source: 'ofm', ...layer });
@@ -50,21 +57,28 @@ export function baseStyle(t = tokens()) {
         type: 'raster-dem', encoding: 'terrarium', tiles: [TERRARIUM], tileSize: 256, maxzoom: 15,
         attribution: '<a href="https://registry.opendata.aws/terrain-tiles/">Terrain Tiles</a>',
       },
+      'fx-veil': { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
     },
     transition: { duration: 0, delay: 0 },
     layers: [
       { id: 'land', type: 'background', paint: { 'background-color': t.land } },
+      // Relief, révélé pendant le chargement des altitudes (invisible sinon). Sous les parcs et l'eau.
+      { id: 'relief', type: 'hillshade', source: 'relief', layout: { visibility: 'none' },
+        paint: {
+          'hillshade-exaggeration': 0, 'hillshade-shadow-color': t.ink, 'hillshade-accent-color': t.ink,
+          'hillshade-highlight-color': t.bg,
+        } },
+      { id: 'topo', type: 'color-relief', source: 'relief', layout: { visibility: 'none' },
+        paint: { 'color-relief-opacity': 0, 'color-relief-color': topoRamp(t, 0, 200) } },
+      // Voile couleur du fond, percé d'un disque qui grandit depuis le départ.
+      { id: 'fx-veil', type: 'fill', source: 'fx-veil', layout: { visibility: 'none' },
+        paint: { 'fill-color': t.land, 'fill-antialias': false } },
       v('park', { type: 'fill', 'source-layer': 'park', filter: polys, paint: { 'fill-color': t.park } }),
       v('wood', { type: 'fill', 'source-layer': 'landcover', filter: ['all', polys, cls('wood', 'grass')],
         paint: { 'fill-color': t.park, 'fill-opacity': 0.7 } }),
       v('water', { type: 'fill', 'source-layer': 'water', filter: ['all', polys, notTunnel], paint: { 'fill-color': t.water } }),
       v('waterway', { type: 'line', 'source-layer': 'waterway', filter: ['all', lines, notTunnel],
         paint: { 'line-color': t.water, 'line-width': zw(10, 0.5, 18, 4) } }),
-      { id: 'relief', type: 'hillshade', source: 'relief', layout: { visibility: 'none' },
-        paint: {
-          'hillshade-exaggeration': 0, 'hillshade-shadow-color': t.sub, 'hillshade-accent-color': t.sub,
-          'hillshade-highlight-color': t.bg,
-        } },
       v('building', { type: 'fill', 'source-layer': 'building', minzoom: 14,
         paint: { 'fill-color': t.building, 'fill-opacity': ['interpolate', ['linear'], ['zoom'], 14, 0, 15.5, 1] } }),
 
@@ -137,11 +151,11 @@ export function createMap(container, { center, zoom }) {
 
 // --- Lignes animées (révélation progressive sur le GPU) -----------------------------------
 
-export const rgba = (hex, a) => {
+export function rgba(hex, a) {
   const h = hex.replace('#', '');
   const n = parseInt(h.length === 3 ? h.replace(/./g, '$&$&') : h, 16);
   return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
-};
+}
 
 /** Dégradé le long de la ligne : couleur pleine jusqu'à k, transparent après. */
 function reveal(color, k) {
@@ -227,23 +241,68 @@ export function tween(ms, onFrame, { ease = (t) => t, alive = () => true } = {})
 
 // --- Animation du chargement du terrain -------------------------------------------------------
 
-const RINGS = 10;
+const RINGS = 10;          // anneaux de distance autour du départ (serrés près de lui)
+const CELL = 220;          // taille d'une « tuile » de la grille de téléchargement (m)
+const SWEEP_MS = 1100;     // durée d'une vague de la grille
+const ringOf = (d, radius) => Math.min(RINGS - 1, Math.floor(Math.sqrt(Math.max(0, d) / radius) * RINGS));
+
+/** Mètres → degrés autour d'une latitude. */
+const mPerDeg = (lat) => [111320 * Math.cos(lat * Math.PI / 180), 111320];
+
+/** Grille de tuiles carrées autour du départ, rangées par anneau. */
+function cellGrid([lat, lon], radius) {
+  const [kx, ky] = mPerDeg(lat);
+  const n = Math.ceil(radius / CELL), features = [];
+  for (let i = -n; i < n; i++) {
+    for (let j = -n; j < n; j++) {
+      const cx = (i + 0.5) * CELL, cy = (j + 0.5) * CELL, d = Math.hypot(cx, cy);
+      if (d > radius) continue;
+      const g = CELL * 0.06; // joint entre tuiles
+      const x0 = lon + (i * CELL + g) / kx, x1 = lon + ((i + 1) * CELL - g) / kx;
+      const y0 = lat + (j * CELL + g) / ky, y1 = lat + ((j + 1) * CELL - g) / ky;
+      features.push({ type: 'Feature', properties: { r: ringOf(d, radius) },
+        geometry: { type: 'Polygon', coordinates: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]] } });
+    }
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+/** Voile percé d'un disque de rayon r (m) centré sur le départ. */
+function veil([lat, lon], r, outer) {
+  const [kx, ky] = mPerDeg(lat);
+  const box = [[lon - outer / kx, lat - outer / ky], [lon + outer / kx, lat - outer / ky],
+    [lon + outer / kx, lat + outer / ky], [lon - outer / kx, lat + outer / ky], [lon - outer / kx, lat - outer / ky]];
+  const hole = [];
+  for (let k = 64; k >= 0; k--) {
+    const a = (k / 64) * 2 * Math.PI;
+    hole.push([lon + (r * Math.cos(a)) / kx, lat + (r * Math.sin(a)) / ky]);
+  }
+  return { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: r > 1 ? [box, hole] : [box] } };
+}
 
 /**
  * Montre sur la carte les deux premières étapes du chargement :
- * - « Réseau OpenStreetMap » : le réseau apparaît en anneaux depuis le départ, serrés près de
- *   lui (une couche par anneau, transitions d'opacité décalées : tout sur le GPU) ;
- * - « Altitudes » : le relief (hillshade Terrarium) se dessine avec la progression.
+ * - « Réseau OpenStreetMap » : une grille de tuiles autour du départ se balaie en vagues tant que
+ *   les données arrivent, puis le réseau la remplace, anneau par anneau, depuis le départ ;
+ * - « Altitudes » : un disque grandit depuis le départ avec la progression et dévoile le relief
+ *   (ombrage + teinte d'altitude).
+ * Les fondus passent par les transitions de style de MapLibre (GPU) ; seul le voile est recalculé.
  */
 export class TerrainFx {
   constructor(map, t, { reduceMotion = false, before } = {}) {
     this.map = map; this.t = t; this.rm = reduceMotion;
-    this.worker = null; this.job = 0;
+    this.worker = null; this.job = 0; this.timers = [];
+    this.cache = null; // { key, net, range } : pour rejouer quand le terrain est déjà prêt
+    map.addSource('fx-cells', { type: 'geojson', data: EMPTY });
     map.addSource('fx-net', { type: 'geojson', data: EMPTY });
+    for (let i = 0; i < RINGS; i++) {
+      map.addLayer({ id: `fx-cell-${i}`, type: 'fill', source: 'fx-cells', filter: ['==', ['get', 'r'], i],
+        paint: { 'fill-color': t.ink, 'fill-opacity': 0, 'fill-antialias': false } }, before);
+    }
     for (let i = 0; i < RINGS; i++) {
       map.addLayer({ id: `fx-net-${i}`, type: 'line', source: 'fx-net', filter: ['==', ['get', 'r'], i],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': t.ink, 'line-opacity': 0, 'line-width': ['interpolate', ['linear'], ['zoom'], 12, 0.4, 16, 1.1] } }, before);
+        paint: { 'line-color': t.ink, 'line-opacity': 0, 'line-width': ['interpolate', ['linear'], ['zoom'], 12, 0.6, 16, 1.6] } }, before);
     }
   }
 
@@ -251,46 +310,126 @@ export class TerrainFx {
     this.map.setPaintProperty(id, `${prop}-transition`, { duration: this.rm ? 0 : ms, delay: this.rm ? 0 : delay }, QUIET);
     this.map.setPaintProperty(id, prop, value, QUIET);
   }
+  _later(fn, ms) { const job = this.job; this.timers.push(setTimeout(() => job === this.job && fn(), ms)); }
+  _stopTimers() { for (const t of this.timers) clearTimeout(t); this.timers = []; clearInterval(this.sweepTimer); cancelAnimationFrame(this.raf); }
+  _show(id, on) { if (this.map.getLayoutProperty(id, 'visibility') !== (on ? 'visible' : 'none')) this.map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none'); }
 
   /** Début du chargement d'une zone (centre [lat, lon], rayon en m). */
   begin(center, radius) {
+    this._stopTimers();
     this.job++;
-    this.center = center; this.radius = radius;
+    this.center = center; this.radius = radius; this.t0 = performance.now();
+    this.key = `${center[0].toFixed(5)},${center[1].toFixed(5)},${Math.round(radius)}`;
+    this.netReady = false;
     this.map.getSource('fx-net').setData(EMPTY);
-    for (let i = 0; i < RINGS; i++) this._paint(`fx-net-${i}`, 'line-opacity', 0);
-    this.setRelief(0);
+    for (let i = 0; i < RINGS; i++) { this._paint(`fx-net-${i}`, 'line-opacity', 0); this._paint(`fx-cell-${i}`, 'fill-opacity', 0); }
+    this.map.getSource('fx-cells').setData(cellGrid(center, radius)).then(() => this._sweep());
+    // Relief : tout est voilé, le disque grandira avec la progression.
+    this.veilR = 0; this.veilTarget = 0;
+    this.map.getSource('fx-veil').setData(veil(center, 0, radius * 3));
+    this._show('fx-veil', true); this._show('relief', true); this._show('topo', true);
+    this._paint('relief', 'hillshade-exaggeration', 0.55, 0);
+    this._paint('topo', 'color-relief-opacity', 0, 0);
   }
 
-  /** Réseau OSM reçu (texte JSON Overpass) : découpe en anneaux hors du thread principal. */
+  /** Vagues sur la grille de tuiles, du départ vers l'extérieur, jusqu'à l'arrivée du réseau. */
+  _sweep() {
+    const wave = () => {
+      if (this.netReady) return;
+      for (let i = 0; i < RINGS; i++) {
+        const d = (i * SWEEP_MS * 0.6) / RINGS;
+        this._later(() => this._paint(`fx-cell-${i}`, 'fill-opacity', 0.13, 160), d);
+        this._later(() => this._paint(`fx-cell-${i}`, 'fill-opacity', 0.04, 700), d + 200);
+      }
+    };
+    wave();
+    if (this.rm) return;
+    clearInterval(this.sweepTimer);
+    this.sweepTimer = setInterval(wave, SWEEP_MS);
+  }
+
+  /** Réseau prêt (GeoJSON en anneaux) : il remplace la grille, vague par vague. */
+  _revealNetwork(net) {
+    // Au moins une vague complète de la grille, même si les données étaient en cache.
+    const wait = Math.max(0, SWEEP_MS * 0.8 - (performance.now() - this.t0));
+    this._later(() => {
+      this.netReady = true;
+      clearInterval(this.sweepTimer);
+      this.map.getSource('fx-net').setData(net).then(() => {
+        for (let i = 0; i < RINGS; i++) {
+          this._paint(`fx-cell-${i}`, 'fill-opacity', 0, 380, i * 70);
+          this._paint(`fx-net-${i}`, 'line-opacity', 0.6, 380, i * 70);
+        }
+      });
+    }, this.rm ? 0 : wait);
+  }
+
+  /** Réseau OSM reçu (texte JSON Overpass) : découpe en anneaux dans un petit worker. */
   network(osmText) {
-    const job = this.job;
+    const job = this.job, key = this.key;
     if (!this.worker) this.worker = new Worker(new URL('./netrings.js', import.meta.url), { type: 'module' });
     this.worker.onmessage = (ev) => {
-      if (job !== this.job) return;
-      this.map.getSource('fx-net').setData(ev.data).then(() => {
-        if (job !== this.job) return;
-        for (let i = 0; i < RINGS; i++) this._paint(`fx-net-${i}`, 'line-opacity', 0.32, 420, i * 90);
-      });
+      this.cache = { ...(this.cache?.key === key ? this.cache : {}), key, net: ev.data };
+      if (job === this.job) this._revealNetwork(ev.data);
     };
     this.worker.postMessage({ osmText, center: this.center, radius: this.radius, rings: RINGS });
   }
 
-  /** Progression des altitudes (0 → 1) : le relief se dessine. */
+  /** Progression des altitudes (0 → 1) : le disque de relief s'agrandit. */
   setRelief(f) {
-    const map = this.map;
-    if (f > 0 && map.getLayoutProperty('relief', 'visibility') !== 'visible') map.setLayoutProperty('relief', 'visibility', 'visible');
-    this._paint('relief', 'hillshade-exaggeration', 0.1 + 0.3 * f, 450);
+    // Croissance quadratique : le bord du disque traverse d'abord la partie visible (près du départ).
+    this.veilTarget = Math.max(this.veilTarget, f * f * this.radius * 1.15);
+    if (this.rm) { this._setVeil(this.veilTarget); return; }
+    if (this.raf) return;
+    const step = () => {
+      const d = this.veilTarget - this.veilR;
+      this._setVeil(Math.abs(d) < this.radius * 0.002 ? this.veilTarget : this.veilR + d * 0.1);
+      this.raf = this.veilR < this.veilTarget ? requestAnimationFrame(step) : 0;
+    };
+    this.raf = requestAnimationFrame(step);
+  }
+  _setVeil(r) {
+    this.veilR = r;
+    if (r >= this.radius * 1.14) { this._show('fx-veil', false); return; }
+    this.map.getSource('fx-veil').setData(veil(this.center, r, this.radius * 3));
+  }
+
+  /** Plage d'altitude de la zone (m) : la teinte d'altitude apparaît. */
+  setRange(lo, hi) {
+    if (this.cache?.key === this.key) this.cache.range = [lo, hi]; else this.cache = { key: this.key, range: [lo, hi] };
+    this.map.setPaintProperty('topo', 'color-relief-color', topoRamp(this.t, lo, hi), QUIET);
+    this._paint('topo', 'color-relief-opacity', 1, 700);
+  }
+
+  /** Terrain déjà chargé : rejoue la séquence en accéléré. Résout quand elle est jouée. */
+  async replay(center, radius) {
+    const c = this.cache;
+    this.begin(center, radius);
+    if (c?.key !== this.key || !c.net) { this.setRelief(1); return; }
+    this._revealNetwork(c.net);
+    if (c.range) this._later(() => this.setRange(...c.range), 500);
+    if (this.rm) { this.setRelief(1); return; }
+    await tween(1300, (k) => this.setRelief(k), { ease: (t) => 1 - Math.pow(1 - t, 2) });
+    await new Promise((r) => setTimeout(r, 450));
   }
 
   /** Efface toute l'animation (fondu), après un éventuel délai. */
   clear(delay = 0) {
+    this._stopTimers();
     const job = ++this.job;
-    for (let i = 0; i < RINGS; i++) this._paint(`fx-net-${i}`, 'line-opacity', 0, 600, delay);
+    this.raf = 0;
+    this._show('fx-veil', false);
+    for (let i = 0; i < RINGS; i++) {
+      this._paint(`fx-net-${i}`, 'line-opacity', 0, 600, delay);
+      this._paint(`fx-cell-${i}`, 'fill-opacity', 0, 400, delay);
+    }
     this._paint('relief', 'hillshade-exaggeration', 0, 700, delay);
+    this._paint('topo', 'color-relief-opacity', 0, 700, delay);
     setTimeout(() => {
       if (job !== this.job) return;
       this.map.getSource('fx-net').setData(EMPTY);
-      this.map.setLayoutProperty('relief', 'visibility', 'none');
+      this.map.getSource('fx-cells').setData(EMPTY);
+      this._show('relief', false); this._show('topo', false);
     }, (this.rm ? 0 : delay + 800));
   }
 }
