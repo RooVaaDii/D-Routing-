@@ -103,7 +103,7 @@ const prefs = (() => { try { return JSON.parse(localStorage.getItem('dplus-prefs
 const savePrefs = () => {
   try {
     localStorage.setItem('dplus-prefs-v2', JSON.stringify({
-      dist: $('dist').value, up: $('up').value, goal: val('goal'), tol: val('tol'), mode: val('mode'), surface: val('surface'), cap: val('cap'), reps,
+      dist: $('dist').value, up: $('up').value, goal: val('goal'), tol: val('tol'), mode: val('mode'), surface: val('surface'), cap: val('cap'), maxc: val('maxc'), reps,
       stairs: $('stairs').checked, reuse: $('optReuse').checked, street: $('optStreet').checked,
     }));
   } catch { /* stockage indisponible */ }
@@ -235,7 +235,7 @@ document.querySelectorAll('input[name=goal]').forEach((r) => r.addEventListener(
 
 if (prefs.dist) $('dist').value = prefs.dist;
 if (prefs.up) $('up').value = prefs.up;
-for (const k of ['goal', 'tol', 'mode', 'surface', 'cap']) if (prefs[k]) check(k, prefs[k]);
+for (const k of ['goal', 'tol', 'mode', 'surface', 'cap', 'maxc']) if (prefs[k]) check(k, prefs[k]);
 if (prefs.reps) reps = prefs.reps;
 if (prefs.stairs) $('stairs').checked = true;
 if (prefs.reuse === false) $('optReuse').checked = false;
@@ -573,6 +573,7 @@ async function generate() {
       startLatLon: start, mode, dmin: dmin * 1000, dmax: dmax * 1000, reps: mode === 'repeat' ? reps : 0,
       surface: val('surface'), avoidStairs: $('stairs').checked,
       avoidReuse: $('optReuse').checked, avoidSameStreet: $('optStreet').checked, hillCap: parseInt(val('cap'), 10),
+      maxClimbs: parseInt(val('maxc'), 10),
       ...(upGoal ? { upTarget: upGoal, upTol: tol } : {}),
       budgetMs: BUDGET, seed: (Math.random() * 2 ** 31) | 0,
     };

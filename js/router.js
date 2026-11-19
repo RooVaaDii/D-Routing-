@@ -76,8 +76,10 @@ class Heap {
 const BETAS = [0, 5, 10, 16]; // intensité de l'attraction vers les pentes
 
 export class Router {
-  constructor(g, surfacePref, { avoidStairs = false, avoidReuse = true, avoidSameStreet = true, hillCap = 0 } = {}) {
+  constructor(g, surfacePref, { avoidStairs = false, avoidReuse = true, avoidSameStreet = true, hillCap = 0, maxClimbs = 0, noUturn = false } = {}) {
     this.g = g;
+    this.maxClimbs = maxClimbs; // nombre de montées au plus (0 = sans limite)
+    this.noUturn = noUturn;     // pénaliser les demi-tours (allers-retours en cul-de-sac)
     const { m, climbOk } = surfaceMultipliers(g, surfacePref, avoidStairs);
     this.mult = m;
     this.climbOk = climbOk;
@@ -258,10 +260,32 @@ export class Router {
         excess += climbQuality(h.gains.slice(this.hillCap));
       }
     }
-    return {
+    const out = {
       L, up: prof.up, quality: climbQuality(prof.climbs), excess, reused, overlap: L > 0 ? reused / L : 0,
       revisit: L > 0 ? revisit / L : 0, unpaved,
     };
+    // Nombre de montées limité : les montées (≥ 10 m, comme « Montées » affiché) au-delà des N
+    // plus grandes ne rapportent plus rien et coûtent ; quelques grandes montées plutôt que
+    // beaucoup de petites.
+    // Demi-tours : le tracé revient aussitôt sur ses pas (aller-retour dans une impasse, zigzag à
+    // un carrefour). On compte les demi-tours et la longueur parcourue deux fois de suite.
+    if (this.noUturn) {
+      let uturns = 0, spur = 0;
+      for (let k = 1; k < path.length; k++) {
+        if (path[k][0] !== path[k - 1][0] || path[k][1] === path[k - 1][1]) continue;
+        uturns++;
+        for (let a = k - 1, b = k; a >= 0 && b < path.length && path[b][0] === path[a][0] && path[b][1] !== path[a][1]; a--, b++) {
+          spur += g.len[path[a][0]];
+        }
+      }
+      out.uturns = uturns; out.spur = spur;
+    }
+    if (this.maxClimbs > 0) {
+      const gains = prof.climbs.filter((c) => c >= 10).sort((a, b) => b - a);
+      out.climbsOver = Math.max(0, gains.length - this.maxClimbs);
+      out.extraQ = climbQuality(gains.slice(this.maxClimbs));
+    }
+    return out;
   }
 }
 
@@ -420,7 +444,7 @@ export function solve(g, params, onProgress = () => {}) {
   const {
     startLatLon, mode = 'loop', dmin, dmax, surface = 'mixed', reps = 0,
     climbLen = 'auto', budgetMs = 3000, seed = 1, avoidStairs = false,
-    avoidReuse = true, avoidSameStreet = true, hillCap = 2,
+    avoidReuse = true, avoidSameStreet = true, hillCap = 2, maxClimbs = 0,
     upTarget = 0, upTol = 0.1, // objectif « dénivelé » (0 = objectif distance, comportement d'origine)
   } = params;
   const goalUp = upTarget > 0 ? { target: upTarget, lo: upTarget * (1 - upTol), hi: upTarget * (1 + upTol) } : null;
@@ -431,6 +455,8 @@ export function solve(g, params, onProgress = () => {}) {
     avoidReuse: circuit ? false : avoidReuse,
     avoidSameStreet: circuit ? false : avoidSameStreet,
     hillCap: circuit ? reps : mode === 'loop' ? hillCap : 0,
+    maxClimbs: mode === 'loop' ? maxClimbs : 0,
+    noUturn: mode === 'loop',
   });
   const [sx, sy] = project(g, startLatLon);
   // Départ accroché au réseau principal (pas à un îlot de chemins isolé)
@@ -601,6 +627,8 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
     let best = -1, bestV = -Infinity;
     forEachNear(g, px, py, rad, (i, d2) => {
       if (!(tree.len[i] <= dmax * 0.5)) return;
+      // Parcours varié : pas de point de passage au bout d'une impasse (il imposerait un demi-tour).
+      if (!circuitReps && g.adjStart[i + 1] - g.adjStart[i] <= 1) return;
       const e = g.elev[i];
       const v = (role === 'high' ? e : role === 'low' ? -e : 0) - Math.sqrt(d2) * 0.004;
       if (v > bestV) { bestV = v; best = i; }
@@ -640,7 +668,10 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
     const st = router.stats(path);
     const upPerKm = st.up / Math.max(st.L / 1000, 0.1);
     // On optimise la « qualité » des montées (les mini-bosses ne rapportent rien).
-    const q = st.quality - 1.5 * st.excess;
+    const q = st.quality - 1.5 * st.excess - (st.climbsOver !== undefined ? 1.5 * st.extraQ + 20 * st.climbsOver : 0)
+      // Demi-tour : 30 points chacun + 0,05 par mètre parcouru en aller-retour (une impasse de 200 m
+      // gravie pour quelques mètres de D+ n'en vaut plus la peine).
+      - (st.uturns !== undefined ? 30 * st.uturns + 0.05 * st.spur : 0);
     let score;
     if (goalUp) {
       // Part du D+ venant de vraies montées : les « dents de scie » restent pénalisées.

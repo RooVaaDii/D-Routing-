@@ -11,7 +11,7 @@ En ligne : https://roovaadii.github.io/D-Routing-/
 - **Type de sortie**
   - *Parcours varié* : une boucle qui enchaîne les vraies montées du coin.
   - *Répétitions de côte* : en « Auto », la meilleure côte du coin, montée autant de fois que la distance (ou le dénivelé visé) le demande ; avec N montées par côte, un circuit de plusieurs côtes, chacune montée N fois.
-- **Options** (pondérations, pas interdictions) : remonter une même côte 1 fois / 2 / 3 / sans limite (parcours varié), ne pas repasser par le même tronçon, ne pas revenir sur une rue déjà prise (même nom OSM, même sur une autre portion), éviter les escaliers. Surface : mixte, route ou chemin.
+- **Options** (pondérations, pas interdictions) : remonter une même côte 1 fois / 2 / 3 / sans limite et nombre de montées au plus 2 / 3 / 5 / sans limite (parcours varié), ne pas repasser par le même tronçon, ne pas revenir sur une rue déjà prise (même nom OSM, même sur une autre portion), éviter les escaliers. Surface : mixte, route ou chemin.
 - **Résultat** : D+ / D−, altitude min–max, D+/km, nombre de montées, profil altimétrique interactif synchronisé avec la carte, 3 variantes, export **GPX**.
 - **Recherche visible** (rendu GPU, MapLibre) :
   - *Réseau OpenStreetMap* : une grille de tuiles autour du départ se balaie en vagues pendant le téléchargement, puis le réseau la remplace, anneau par anneau ;
@@ -45,6 +45,8 @@ Les modèles d'altitude gratuits ont du « bruit » de quelques mètres. En vill
 - **Montées candidates** : programmation dynamique sur les arêtes montantes (coût linéaire). Pour chaque nœud et chaque tranche de longueur, elle garde la montée la plus haute qui y aboutit.
 - **Boucle** : recherche heuristique en environ 3 s dans un Web Worker. Les solutions sont des suites de points de passage et de montées, reliées par un A\* attiré par les pentes et pénalisant les tronçons déjà empruntés. On combine générations aléatoires, réparation de la distance, mutations et « niches » pour garder des variantes différentes.
 - **Côte ×N** : score = N × gain de la côte, avec pénalités si l'accès est trop long ou la distance hors plage.
+- **Pas d'allers-retours en impasse** (parcours varié) : chaque demi-tour coûte (30 points + 0,05 par mètre parcouru deux fois de suite) et les points de passage ne sont jamais placés au bout d'une impasse.
+- **Nombre de montées limité** (option) : au-delà des N plus grandes montées (≥ 10 m), une montée ne rapporte plus rien et coûte.
 - **Objectif dénivelé** (ajout, le mode distance est inchangé) : le score vise la valeur de D+ demandée (forte pénalité sous la marge, plus légère au-dessus), puis départage par la longueur : plus court = mieux. Les réparations de la recherche visent le D+ au lieu de la distance ; en répétitions « Auto », N est le nombre de montées juste suffisant.
 
 ## Lancer en local
@@ -66,5 +68,7 @@ node paris.mjs                  # moteur sur le vrai relief de Paris (réseau si
 node ign.mjs                    # décodage / validation de la grille IGN
 node goal.mjs                   # objectif dénivelé (relief synthétique)
 node goal-paris.mjs             # objectif dénivelé (relief de Paris)
+node climbs-limit.mjs           # limite du nombre de montées
+node uturns.mjs                 # pas de demi-tour en impasse
 node e2e.cjs <dossier>          # interface complète dans Chromium (Overpass simulé)
 ```
