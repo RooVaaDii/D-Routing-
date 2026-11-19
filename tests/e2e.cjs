@@ -35,12 +35,6 @@ async function run(name, viewport, mode) {
     const f = u.includes('archivo') ? path.join(fontDir, 'archivo-latin-standard-normal.woff2') : path.join(monoDir, u.includes('600') ? 'jetbrains-mono-latin-600-normal.woff2' : 'jetbrains-mono-latin-400-normal.woff2');
     r.fulfill({ status: 200, contentType: 'font/woff2', body: fs.readFileSync(f), headers: { 'Access-Control-Allow-Origin': '*' } });
   });
-  // Fond CARTO inaccessible ici : on affiche les tuiles OSM à la place pour le test
-  await page.route(/basemaps\.cartocdn/, async (r) => {
-    const m = r.request().url().match(/\/(\d+)\/(\d+)\/(\d+)(@2x)?\.png/);
-    const resp = await page.request.fetch(`https://tile.openstreetmap.org/${m[1]}/${m[2]}/${m[3]}.png`, { headers: { 'User-Agent': 'dplus-test' } }).catch(() => null);
-    if (resp) r.fulfill({ status: 200, contentType: 'image/png', body: await resp.body() }); else r.abort();
-  });
   await page.goto('http://127.0.0.1:8080/');
   await page.evaluate(() => localStorage.clear());
   await page.reload();

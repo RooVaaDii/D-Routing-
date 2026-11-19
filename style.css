@@ -215,6 +215,7 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.18); }
 
 /* --- Carte --------------------------------------------------------------- */
 .leaflet-container { font-family: var(--text); background: #EEF0F3; }
+.basemap { filter: grayscale(1) contrast(.78) brightness(1.13); }
 .leaflet-control-attribution { font-family: var(--mono); font-size: 9px !important; background: rgba(255,255,255,.75) !important; border-radius: 6px 0 0 0; }
 .leaflet-control-zoom { border: none !important; box-shadow: 0 4px 16px rgba(13,16,21,.12) !important; border-radius: 12px !important; overflow: hidden; }
 .leaflet-control-zoom a { width: 38px !important; height: 38px !important; line-height: 38px !important; color: var(--ink) !important; font-weight: 700; }

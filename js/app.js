@@ -17,9 +17,10 @@ const fmtInt = (x) => Math.round(x).toLocaleString('fr-FR');
 // --- Carte -------------------------------------------------------------------
 const map = L.map('map', { zoomControl: false, renderer: L.svg({ padding: 0.6 }) }).setView([48.8566, 2.3522], 13);
 if (!isMobile()) L.control.zoom({ position: 'bottomright' }).addTo(map);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-  maxZoom: 20, subdomains: 'abcd',
-  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · © <a href="https://carto.com/attributions">CARTO</a>',
+// Tuiles OpenStreetMap (gratuites, sans clé), désaturées en CSS pour un fond clair épuré.
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, className: 'basemap',
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
 }).addTo(map);
 
 const ghostLayer = L.layerGroup().addTo(map);

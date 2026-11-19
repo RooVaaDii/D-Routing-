@@ -23,7 +23,7 @@ En ligne : https://roovaadii.github.io/D-Routing-/
 | Altitude en France | IGN RGE ALTI (modèle du **sol nu**, licence ouverte), via le WMS de la Géoplateforme |
 | Altitude ailleurs / secours | Tuiles Terrarium (Mapzen / AWS Open Data : SRTM, etc.) |
 | Géocodage | Nominatim (OpenStreetMap) |
-| Fond de carte | CARTO Positron (données OSM) |
+| Fond de carte | Tuiles OpenStreetMap, désaturées en CSS |
 
 ## Comment le D+ est calculé (et pourquoi c'est fiable)
 
