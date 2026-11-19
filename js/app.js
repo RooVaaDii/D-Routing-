@@ -1,6 +1,6 @@
 // Interface : carte, réglages, animation de la recherche, résultats.
 import { bboxAround, haversine } from './geo.js';
-import { fetchOsm } from './osm.js';
+import { loadOsmTiles } from './osmtiles.js';
 import { loadDem, browserDecode, inFrance, loadIgnDem, validateIgn } from './elevation.js';
 import { drawProfile, indexAt } from './profile.js';
 import { toGpx, downloadText } from './gpx.js';
@@ -347,12 +347,18 @@ async function loadArea(center, r, signal) {
   fx?.begin(center, r);
 
   const osmP = (async () => {
+    // Ancienne zone complète encore en cache (versions précédentes) : réutilisée telle quelle.
     const hit = await findCovering('osm', bbox);
     if (hit) { step('osm', 'done', 'en cache'); fx?.network(hit.data); return hit.data; }
-    const text = await fetchOsm(bbox, { signal, onLog: (m) => diag.log(`OSM ${m}`), onStatus: (t) => { if (!signal.aborted) step('osm', 'on', t.toLowerCase()); } });
-    step('osm', 'done', `${(text.length / 1e6).toFixed(1)} Mo`);
+    let tilesTxt = '';
+    const { text, tiles, cached } = await loadOsmTiles(bbox, center, {
+      signal,
+      log: (m) => diag.log(`OSM ${m}`),
+      onProgress: ({ done, total }) => { tilesTxt = `${done}/${total} tuiles`; if (live() && done < total) step('osm', 'on', tilesTxt); },
+      onStatus: (t) => { if (live()) step('osm', 'on', `${tilesTxt} · ${t.toLowerCase()}`); },
+    });
+    step('osm', 'done', cached === tiles ? 'en cache' : `${tiles} tuiles`);
     fx?.network(text);
-    save('osm', bbox, text);
     return text;
   })();
 

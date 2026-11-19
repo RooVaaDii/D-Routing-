@@ -27,7 +27,16 @@ async function run(name, viewport, mode) {
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.log('pageerror:', e.message));
   page.on('console', (m) => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) console.log('console:', m.text()); });
-  await page.route(/overpass/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: fakeOsm() }));
+  // Overpass simulé : ne renvoie que les voies qui touchent la bbox demandée (requêtes par tuiles).
+  let osmCalls = 0;
+  const all = JSON.parse(fakeOsm()).elements;
+  await page.route(/overpass/, (r) => {
+    osmCalls++;
+    const q = decodeURIComponent((r.request().postData() || '').replace(/^data=/, '').replace(/\+/g, ' '));
+    const [s, w, n, e] = (/\[bbox:([^\]]+)\]/.exec(q)?.[1] || '-90,-180,90,180').split(',').map(Number);
+    const elements = all.filter((el) => el.geometry.some((p) => p.lat >= s && p.lat <= n && p.lon >= w && p.lon <= e));
+    r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ elements }) });
+  });
   await page.route(/nominatim/, (r) => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ address: { house_number: '12', road: 'Rue de Test', city: 'Lyon' } }) }));
   await page.route(/fonts\.googleapis/, (r) => r.fulfill({ status: 200, contentType: 'text/css', body: fontCss }));
   await page.route(/fonts\.local/, (r) => {
@@ -42,7 +51,7 @@ async function run(name, viewport, mode) {
   await page.screenshot({ path: `${OUT}/${name}-1-setup.png` });
   await page.mouse.click(viewport.width > 720 ? viewport.width * 0.7 : viewport.width / 2, viewport.width > 720 ? viewport.height / 2 : 130);
   await page.waitForTimeout(2500); // préchargement
-  console.log(name, 'préchargement :', await page.textContent('#preload'));
+  console.log(name, 'préchargement :', await page.textContent('#preload'), '| requêtes Overpass :', osmCalls);
   const runOnce = async (tag) => {
     await page.click('#go');
     await page.waitForTimeout(tag === 'loop' ? 2200 : 1200);
@@ -59,6 +68,7 @@ async function run(name, viewport, mode) {
   await page.click('input[value=repeat] + span');
   await page.click('#repsPlus'); await page.click('#repsPlus');
   await runOnce('circuit');
+  console.log(name, 'requêtes Overpass au total :', osmCalls);
   // Objectif dénivelé (parcours varié, +150 m)
   await page.click('#edit');
   await page.click('input[value=loop] + span');

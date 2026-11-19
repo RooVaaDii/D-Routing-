@@ -86,3 +86,48 @@ export async function save(kind, bbox, data) {
     listener({ op: 'écriture', kind, ms: performance.now() - t0, ok: false, note: e.message });
   }
 }
+
+// --- Tuiles du réseau OSM -------------------------------------------------------------------
+// Une entrée par tuile (clé tile:<tuile>:<date>) : déplacer le départ ou changer la distance ne
+// retélécharge que les tuiles manquantes.
+const TILE_MAX = 160;
+const TILE_AGE = 14 * 864e5;
+
+/** Index des tuiles en cache : Map tuile → { key, t }. */
+export async function tileIndex() {
+  try {
+    const idx = new Map();
+    for (const key of await tx('readonly', (st) => st.getAllKeys())) {
+      const m = /^tile:(.+):(\d+)$/.exec(String(key));
+      if (m) idx.set(m[1], { key, t: +m[2] });
+    }
+    return idx;
+  } catch (e) {
+    listener({ op: 'index des tuiles', kind: 'osm', ms: 0, ok: false, note: e.message });
+    return new Map();
+  }
+}
+
+/** Contenu d'une tuile en cache (texte JSON), ou null. */
+export async function getTile(idx, tile) {
+  const hit = idx.get(tile);
+  if (!hit || Date.now() - hit.t > TILE_AGE) return null;
+  try { return (await tx('readonly', (st) => st.get(hit.key)))?.data ?? null; } catch { return null; }
+}
+
+/** Enregistre une tuile ; ne garde que les plus récentes. */
+export async function putTile(idx, tile, data) {
+  try {
+    const t = Date.now(), key = `tile:${tile}:${t}`;
+    const old = idx.get(tile);
+    await tx('readwrite', (st) => { st.put({ key, t, data }); if (old) st.delete(old.key); });
+    idx.set(tile, { key, t });
+    if (idx.size > TILE_MAX) {
+      const drop = [...idx.entries()].sort((a, b) => a[1].t - b[1].t).slice(0, idx.size - TILE_MAX);
+      await tx('readwrite', (st) => { for (const [, v] of drop) st.delete(v.key); });
+      for (const [k] of drop) idx.delete(k);
+    }
+  } catch (e) {
+    listener({ op: 'écriture tuile', kind: 'osm', ms: 0, ok: false, note: e.message });
+  }
+}

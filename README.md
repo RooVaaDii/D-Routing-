@@ -18,7 +18,7 @@ En ligne : https://roovaadii.github.io/D-Routing-/
   - *Altitudes* : un disque grandit depuis le départ avec la progression et dévoile le relief (ombrage + teinte d'altitude) ;
   - si le terrain est déjà préchargé, cette séquence est rejouée en accéléré ;
   - *Recherche* : la carte dézoome, les options testées se dessinent et s'accumulent, le meilleur du moment en orange ; à la fin, elles s'éliminent une à une jusqu'aux 3 parcours retenus, puis le choisi se trace avec le profil (les deux autres restent en fin sur la carte).
-- **Rapide** : le terrain est préchargé dès que le départ est placé ; réseau OSM et altitudes IGN gardés en cache (IndexedDB), tuiles, polices de carte et tuiles d'altitude en cache (service worker).
+- **Rapide** : le terrain est préchargé dès que le départ est placé ; réseau OSM téléchargé par tuiles de ~2 km (petites requêtes, deux à la fois, gardées en cache : seules les tuiles manquantes sont retéléchargées) et altitudes IGN gardées en cache (IndexedDB), tuiles, polices de carte et tuiles d'altitude en cache (service worker).
 
 ## Données (gratuites / ouvertes)
 
