@@ -46,6 +46,15 @@ startMarker.on('dragend', () => setStart(startMarker.getLatLng(), { pan: false }
 const cursor = L.marker([0, 0], { icon: L.divIcon({ className: 'pin-cursor', iconSize: [14, 14] }), interactive: false, zIndexOffset: 900 });
 map.on('click', (e) => { if (state === 'setup') setStart(e.latlng, { pan: false }); });
 
+/** Centre la carte sur un point dans la zone visible (hors panneau). */
+function flyToVisible(ll, zoom, duration = 0.8) {
+  const r = $('sheet').getBoundingClientRect();
+  const dx = isMobile() ? 0 : -(r.right / 2);
+  const dy = isMobile() ? (innerHeight - r.top) / 2 : 0;
+  const c = map.unproject(map.project(ll, zoom).add([dx, dy]), zoom);
+  map.flyTo(c, zoom, { duration: reduceMotion ? 0 : duration });
+}
+
 function mapPadding() {
   const r = $('sheet').getBoundingClientRect();
   return isMobile()
@@ -87,7 +96,7 @@ const savePrefs = () => {
 async function setStart(ll, { pan = true, label = null } = {}) {
   start = [ll.lat, ll.lng];
   startMarker.setLatLng(ll).addTo(map);
-  if (pan) map.flyTo(ll, Math.max(map.getZoom(), 15), { duration: reduceMotion ? 0 : 0.8 });
+  if (pan) flyToVisible(L.latLng(ll), Math.max(map.getZoom(), 15));
   $('suggestions').hidden = true;
   hint('');
   preloadSoon();
@@ -132,14 +141,29 @@ $('addressForm').addEventListener('submit', async (e) => {
 });
 const shortName = (x) => x.display_name.split(',').slice(0, 3).join(',');
 
-$('locate').onclick = () => {
+// Géolocalisation : place directement le départ sur ma position
+const meMarker = L.marker([0, 0], { icon: L.divIcon({ className: 'pin-me', iconSize: [16, 16] }), interactive: false, zIndexOffset: 800 });
+function locateMe() {
   if (!navigator.geolocation) return hint('Géolocalisation indisponible sur cet appareil.', true);
+  if (state !== 'setup') setState('setup');
+  $('geoBtn').classList.add('busy');
   hint('Localisation…');
   navigator.geolocation.getCurrentPosition(
-    (p) => setStart({ lat: p.coords.latitude, lng: p.coords.longitude }),
-    () => hint('Position refusée. Saisis une adresse ou touche la carte.', true),
-    { enableHighAccuracy: true, timeout: 10000 });
-};
+    (p) => {
+      $('geoBtn').classList.remove('busy');
+      const ll = { lat: p.coords.latitude, lng: p.coords.longitude };
+      meMarker.setLatLng(ll).addTo(map);
+      routeLayer.clearLayers();
+      setStart(ll);
+    },
+    (err) => {
+      $('geoBtn').classList.remove('busy');
+      hint(err.code === 1 ? 'Localisation refusée : autorise-la dans les réglages du navigateur, ou touche la carte.' : 'Position introuvable pour le moment. Réessaie ou touche la carte.', true);
+    },
+    { enableHighAccuracy: true, timeout: 12000, maximumAge: 30000 });
+}
+$('locate').onclick = locateMe;
+$('geoBtn').onclick = locateMe;
 
 // --- Réglages -----------------------------------------------------------------------
 const fmtDec = (x) => x.toLocaleString('fr-FR', { maximumFractionDigits: 1 });
@@ -226,7 +250,7 @@ function ensureArea(center, radius) {
     await loadArea(center, z.radius);
     area = z;
   })();
-  z.promise.finally(() => { if (loading === z) loading = null; });
+  z.promise.finally(() => { if (loading === z) loading = null; }).catch(() => {});
   loading = z;
   return z.promise;
 }
@@ -376,7 +400,7 @@ async function generate() {
   liveBest = 0; setLive(0, null); $('liveBest').textContent = '—'; $('bar').style.width = '0';
   routeLayer.clearLayers(); clearSearch(); cursor.remove();
   // On part serré sur le départ…
-  map.flyTo(start, 16, { duration: reduceMotion ? 0 : 0.7 });
+  flyToVisible(L.latLng(start), 16, 0.7);
 
   try {
     await ensureArea(start, areaRadius());
