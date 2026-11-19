@@ -89,34 +89,34 @@ export function gainLoss(eles, from = 0, to = eles.length) {
  */
 export function climbProfile(eles, th = 5) {
   const n = eles.length;
-  const climbs = [];
+  const climbs = [], peaks = [];
   let up = 0, down = 0;
-  if (n < 2) return { up, down, climbs };
-  let lo = eles[0], hi = eles[0], base = eles[0], peak = eles[0], trend = 0;
+  if (n < 2) return { up, down, climbs, peaks };
+  let lo = eles[0], hi = eles[0], base = eles[0], peak = eles[0], trend = 0, peakI = 0, hiI = 0;
   for (let i = 1; i < n; i++) {
     const e = eles[i];
     if (trend === 0) {
       if (e < lo) lo = e;
-      if (e > hi) hi = e;
-      if (e - lo >= th) { trend = 1; base = lo; peak = e; }
-      else if (hi - e >= th) { trend = -1; base = hi; peak = e; }
+      if (e > hi) { hi = e; hiI = i; }
+      if (e - lo >= th) { trend = 1; base = lo; peak = e; peakI = i; }
+      else if (hi - e >= th) { trend = -1; base = hi; peak = e; peakI = i; }
     } else if (trend === 1) {
-      if (e > peak) peak = e;
+      if (e > peak) { peak = e; peakI = i; }
       else if (peak - e >= th) {
-        climbs.push(peak - base); up += peak - base;
-        base = peak; peak = e; trend = -1;
+        climbs.push(peak - base); peaks.push(peakI); up += peak - base;
+        base = peak; peak = e; peakI = i; trend = -1;
       }
     } else {
-      if (e < peak) peak = e;
+      if (e < peak) { peak = e; peakI = i; }
       else if (e - peak >= th) {
         down += base - peak;
-        base = peak; peak = e; trend = 1;
+        base = peak; peak = e; peakI = i; trend = 1;
       }
     }
   }
-  if (trend === 1) { climbs.push(peak - base); up += peak - base; }
+  if (trend === 1) { climbs.push(peak - base); peaks.push(peakI); up += peak - base; }
   else if (trend === -1) down += base - peak;
-  return { up, down, climbs };
+  return { up, down, climbs, peaks };
 }
 
 /** Valeur « sportive » des montées : < 6 m ne compte pas, ≥ 25 m compte pleinement. */
@@ -185,7 +185,8 @@ export function buildGraph(elements, elevAt, center) {
   // Arêtes
   const eU = new Grow(Int32Array), eV = new Grow(Int32Array), eLen = new Grow(Float32Array);
   const eUp = new Grow(Float32Array), eDown = new Grow(Float32Array);
-  const eHw = new Grow(Uint8Array), eSurf = new Grow(Uint8Array);
+  const eHw = new Grow(Uint8Array), eSurf = new Grow(Uint8Array), eStreet = new Grow(Int32Array);
+  const streetIds = new Map();
   const eS0 = new Grow(Int32Array), eSn = new Grow(Int32Array);
   const sLat = new Grow(Float64Array, 1 << 18), sLon = new Grow(Float64Array, 1 << 18);
   const sEle = new Grow(Float32Array, 1 << 18);
@@ -194,6 +195,10 @@ export function buildGraph(elements, elevAt, center) {
   for (const w of ways) {
     const t = w.tags;
     const hw = HW_CLASS[t.highway];
+    // Identifiant de rue (nom, sinon référence) pour pénaliser les passages répétés
+    const key = t.name || t.ref || null;
+    let street = -1;
+    if (key) { street = streetIds.get(key); if (street === undefined) { street = streetIds.size; streetIds.set(key, street); } }
     const surf = surfaceOf(t);
     // Ponts et tunnels : le MNT donne l'altitude du fond de vallée ou du relief,
     // on interpole donc linéairement entre les deux extrémités.
@@ -229,7 +234,7 @@ export function buildGraph(elements, elevAt, center) {
       }
       const [up, down] = gainLoss(tmpEle);
       eU.push(u); eV.push(v); eLen.push(Math.max(len, 0.5));
-      eUp.push(up); eDown.push(down); eHw.push(hw); eSurf.push(surf);
+      eUp.push(up); eDown.push(down); eHw.push(hw); eSurf.push(surf); eStreet.push(street);
       eS0.push(sLat.n); eSn.push(m);
       for (let s = 0; s < m; s++) { sLat.push(tmpLat[s]); sLon.push(tmpLon[s]); sEle.push(tmpEle[s]); }
       start = i;
@@ -240,7 +245,7 @@ export function buildGraph(elements, elevAt, center) {
   const g = {
     N, M, lat, lon, x, y, elev, center,
     eu: eU.done(), ev: eV.done(), len: eLen.done(), up: eUp.done(), down: eDown.done(),
-    hw: eHw.done(), surf: eSurf.done(), s0: eS0.done(), sn: eSn.done(),
+    hw: eHw.done(), surf: eSurf.done(), street: eStreet.done(), nStreets: streetIds.size, s0: eS0.done(), sn: eSn.done(),
     sLat: sLat.done(), sLon: sLon.done(), sEle: sEle.done(),
   };
 

@@ -39,26 +39,29 @@ async function run(name, viewport, mode) {
   await page.evaluate(() => localStorage.clear());
   await page.reload();
   await page.waitForTimeout(800);
-  await page.evaluate(([la, lo]) => window.__test = true, [lat0, lon0]);
-  // Place le départ via un clic sur la carte au centre du réseau simulé
-  await page.evaluate(([la, lo]) => { const m = document.querySelector('#map'); }, [lat0, lon0]);
   await page.screenshot({ path: `${OUT}/${name}-1-setup.png` });
-  const mapBox = await page.locator('#map').boundingBox();
-  // centre la carte sur Lyon puis clique
-  await page.evaluate(([la, lo]) => window.dispatchEvent(new CustomEvent('noop')), [lat0, lon0]);
-  await page.mouse.click(viewport.width > 720 ? viewport.width * 0.7 : viewport.width / 2, viewport.width > 720 ? viewport.height / 2 : 150);
-  if (mode === 'repeat') await page.click('input[value=repeat] + span');
-  await page.click('#go');
-  await page.waitForTimeout(2600);
-  await page.screenshot({ path: `${OUT}/${name}-2-search.png` });
-  await page.waitForFunction(() => document.querySelector('#sheet').dataset.state !== 'search', null, { timeout: 60000 });
-  await page.waitForTimeout(2600);
-  console.log(name, 'état:', await page.evaluate(() => document.querySelector('#sheet').dataset.state), '| hint:', await page.textContent('#hint'),
-    '| D+', await page.textContent('#rUp'), '| km', await page.textContent('#rDist'), '| variantes', await page.locator('#variants button').count());
-  await page.screenshot({ path: `${OUT}/${name}-3-result.png` });
+  await page.mouse.click(viewport.width > 720 ? viewport.width * 0.7 : viewport.width / 2, viewport.width > 720 ? viewport.height / 2 : 130);
+  await page.waitForTimeout(2500); // préchargement
+  console.log(name, 'préchargement :', await page.textContent('#preload'));
+  const runOnce = async (tag) => {
+    await page.click('#go');
+    await page.waitForTimeout(tag === 'loop' ? 2200 : 1200);
+    await page.screenshot({ path: `${OUT}/${name}-${tag}-search.png` });
+    await page.waitForFunction(() => document.querySelector('#sheet').dataset.state !== 'search', null, { timeout: 60000 });
+    await page.waitForTimeout(2600);
+    console.log(name, tag, 'état:', await page.evaluate(() => document.querySelector('#sheet').dataset.state), '| hint:', await page.textContent('#hint'),
+      '| D+', await page.textContent('#rUp'), '| km', await page.textContent('#rDist'), '|', (await page.textContent('#rClimb')) || '',
+      '| étapes:', (await page.textContent('#steps')).replace(/\s+/g, ' '));
+    await page.screenshot({ path: `${OUT}/${name}-${tag}-result.png` });
+  };
+  await runOnce('loop');
+  await page.click('#edit');
+  await page.click('input[value=repeat] + span');
+  await page.click('#repsPlus'); await page.click('#repsPlus');
+  await runOnce('circuit');
   await browser.close();
 }
 (async () => {
-  await run('mobile', { width: 390, height: 844 }, process.argv[3] || 'loop');
-  await run('desktop', { width: 1280, height: 800 }, process.argv[3] || 'loop');
+  await run('mobile', { width: 390, height: 844 });
+  await run('desktop', { width: 1280, height: 800 });
 })();

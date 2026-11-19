@@ -15,7 +15,7 @@ const HIGHWAYS = [
 
 // Tags réellement utilisés par le graphe : on allège la réponse (énorme en ville sinon).
 const KEEP_TAGS = ['highway', 'surface', 'tracktype', 'bridge', 'tunnel', 'access', 'foot',
-  'service', 'sac_scale', 'smoothness', 'footway', 'area'];
+  'service', 'sac_scale', 'smoothness', 'footway', 'area', 'name', 'ref'];
 
 export function overpassQuery(b) {
   const bbox = `${b.s.toFixed(6)},${b.w.toFixed(6)},${b.n.toFixed(6)},${b.e.toFixed(6)}`;

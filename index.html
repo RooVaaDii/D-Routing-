@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#F3F4F6">
+  <meta name="theme-color" content="#FFFFFF">
   <title>D+ Routing</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=JetBrains+Mono:wght@400;600&display=swap">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..800&display=swap">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -18,28 +18,28 @@
     <button id="handle" class="handle" aria-label="Agrandir ou réduire le panneau"><span></span></button>
 
     <header class="brand">
-      <span class="wordmark">D<b>+</b>ROUTING</span>
-      <span class="tag mono">PARCOURS À FORT DÉNIVELÉ</span>
+      <span class="wordmark">D<b>+</b> Routing</span>
     </header>
 
     <!-- 1. Réglages -------------------------------------------------------->
     <section class="view" id="view-setup">
       <form id="addressForm" class="address" autocomplete="off">
-        <input id="address" type="search" placeholder="Adresse de départ ou touche la carte" aria-label="Adresse de départ">
+        <input id="address" type="search" placeholder="Adresse de départ" aria-label="Adresse de départ">
         <button type="button" id="locate" class="icon" aria-label="Utiliser ma position">
-          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/></svg>
         </button>
       </form>
       <ul id="suggestions" class="suggestions" hidden></ul>
+      <p class="note" id="preload" aria-live="polite"></p>
 
       <div class="block">
-        <div class="label mono">DISTANCE</div>
-        <div class="distance">
-          <output id="distOut" class="display">12</output><span class="unit display">KM</span>
-          <span id="rangeOut" class="mono range-out">11,4 – 12,6 KM</span>
+        <div class="row-between">
+          <span class="label">Distance</span>
+          <span id="rangeOut" class="aside">11,4 – 12,6 km</span>
         </div>
+        <div class="distance"><output id="distOut" class="num">12</output><span class="unit">km</span></div>
         <input id="dist" type="range" min="2" max="42" step="0.5" value="12" aria-label="Distance en kilomètres">
-        <div class="chips" role="radiogroup" aria-label="Tolérance">
+        <div class="seg" role="radiogroup" aria-label="Tolérance">
           <label><input type="radio" name="tol" value="0.05" checked><span>±5 %</span></label>
           <label><input type="radio" name="tol" value="0.1"><span>±10 %</span></label>
           <label><input type="radio" name="tol" value="0.2"><span>±20 %</span></label>
@@ -47,76 +47,90 @@
       </div>
 
       <div class="block">
-        <div class="label mono">MODE</div>
-        <div class="modes" role="radiogroup">
-          <label class="mode"><input type="radio" name="mode" value="loop" checked>
-            <span><b class="display">BOUCLE</b><small>Max de D+ sans repasser</small></span></label>
-          <label class="mode"><input type="radio" name="mode" value="repeat">
-            <span><b class="display">CÔTE ×N</b><small>Répétitions de la meilleure côte</small></span></label>
+        <span class="label">Type de sortie</span>
+        <div class="seg seg-lg" role="radiogroup">
+          <label><input type="radio" name="mode" value="loop" checked><span>Boucle</span></label>
+          <label><input type="radio" name="mode" value="repeat"><span>Côtes</span></label>
         </div>
-        <div id="repsRow" class="reps" hidden>
-          <span class="mono">RÉPÉTITIONS</span>
-          <div class="stepper">
-            <button type="button" id="repsMinus" aria-label="Moins">−</button>
-            <output id="repsOut" class="display">AUTO</output>
-            <button type="button" id="repsPlus" aria-label="Plus">+</button>
+
+        <div id="loopOpts">
+          <div class="row-between line">
+            <span>Même côte, au plus</span>
+            <div class="seg seg-sm" role="radiogroup" aria-label="Nombre maximal de montées d'une même côte">
+              <label><input type="radio" name="cap" value="1"><span>×1</span></label>
+              <label><input type="radio" name="cap" value="2" checked><span>×2</span></label>
+              <label><input type="radio" name="cap" value="3"><span>×3</span></label>
+              <label><input type="radio" name="cap" value="0"><span>∞</span></label>
+            </div>
           </div>
+        </div>
+
+        <div id="repsRow" hidden>
+          <div class="row-between line">
+            <span>Répétitions par côte</span>
+            <div class="stepper">
+              <button type="button" id="repsMinus" aria-label="Moins">−</button>
+              <output id="repsOut">Auto</output>
+              <button type="button" id="repsPlus" aria-label="Plus">+</button>
+            </div>
+          </div>
+          <p class="note" id="repsHelp"></p>
         </div>
       </div>
 
       <div class="block">
-        <div class="label mono">SURFACE</div>
-        <div class="chips" role="radiogroup" aria-label="Surface">
-          <label><input type="radio" name="surface" value="mixed" checked><span>MIXTE</span></label>
-          <label><input type="radio" name="surface" value="road"><span>ROUTE</span></label>
-          <label><input type="radio" name="surface" value="trail"><span>CHEMIN</span></label>
+        <span class="label">Surface</span>
+        <div class="seg" role="radiogroup" aria-label="Surface">
+          <label><input type="radio" name="surface" value="mixed" checked><span>Mixte</span></label>
+          <label><input type="radio" name="surface" value="road"><span>Route</span></label>
+          <label><input type="radio" name="surface" value="trail"><span>Chemin</span></label>
         </div>
-        <label class="switch"><input id="stairs" type="checkbox"><span class="track"></span><span>Éviter les escaliers</span></label>
+        <label class="switch"><span>Éviter de repasser au même endroit</span><input id="optReuse" type="checkbox" checked><i></i></label>
+        <label class="switch"><span>Éviter de reprendre la même rue</span><input id="optStreet" type="checkbox" checked><i></i></label>
+        <label class="switch"><span>Éviter les escaliers</span><input id="stairs" type="checkbox"><i></i></label>
       </div>
 
-      <button id="go" class="cta display" type="button">GÉNÉRER <span aria-hidden="true">→</span></button>
+      <button id="go" class="cta" type="button">Générer le parcours</button>
       <p id="hint" class="hint" aria-live="polite"></p>
     </section>
 
     <!-- 2. Recherche -------------------------------------------------------->
     <section class="view" id="view-search" hidden>
-      <div class="label mono" id="searchTitle">CHARGEMENT DU TERRAIN</div>
-      <ol class="steps mono" id="steps">
-        <li data-step="osm"><i></i><span>Réseau OSM</span><em></em></li>
+      <div class="row-between">
+        <span class="label" id="searchTitle">Chargement du terrain</span>
+        <span class="aside" id="searchPct"></span>
+      </div>
+      <ol class="steps" id="steps">
+        <li data-step="osm"><i></i><span>Réseau OpenStreetMap</span><em></em></li>
         <li data-step="dem"><i></i><span>Altitudes</span><em></em></li>
         <li data-step="graph"><i></i><span>Graphe</span><em></em></li>
         <li data-step="search"><i></i><span>Recherche</span><em></em></li>
       </ol>
       <div class="live">
-        <div><span class="mono">PARCOURS TESTÉS</span><b class="display" id="liveEvals">0</b></div>
-        <div><span class="mono">MEILLEUR D+</span><b class="display hot" id="liveBest">—</b></div>
+        <div><span class="label">Parcours testés</span><b class="num" id="liveEvals">0</b></div>
+        <div><span class="label">Meilleur D+</span><b class="num accent" id="liveBest">—</b></div>
       </div>
       <div class="bar"><span id="bar"></span></div>
     </section>
 
     <!-- 3. Résultat --------------------------------------------------------->
     <section class="view" id="view-result" hidden>
-      <div class="variants" id="variants"></div>
+      <div class="variants" id="variants" role="tablist"></div>
       <div class="hero">
-        <div class="dplus"><b class="display" id="rUp">+0</b><span class="mono">M D+</span></div>
-        <div class="dist"><b class="display" id="rDist">0,0</b><span class="mono">KM</span></div>
+        <div><b class="num accent" id="rUp">+0</b><span class="label">m de D+</span></div>
+        <div><b class="num" id="rDist">0,0</b><span class="label">km</span></div>
       </div>
-      <p class="climb mono" id="rClimb" hidden></p>
-      <dl class="facts mono" id="rFacts"></dl>
-      <div class="profile">
-        <canvas id="profile" aria-label="Profil altimétrique"></canvas>
-        <div class="legend mono">
-          <span style="--c:var(--g-down)">DESCENTE</span><span style="--c:var(--g-flat)">PLAT</span><span style="--c:var(--g-1)">3–6 %</span><span style="--c:var(--g-2)">6–10 %</span><span style="--c:var(--g-3)">&gt;10 %</span>
-        </div>
-      </div>
+      <p class="climb" id="rClimb" hidden></p>
+      <dl class="facts" id="rFacts"></dl>
+      <canvas id="profile" aria-label="Profil altimétrique"></canvas>
       <div class="actions">
-        <button id="gpx" class="cta display" type="button">EXPORTER GPX</button>
-        <div class="row">
-          <button id="edit" class="ghost-btn mono" type="button">← RÉGLAGES</button>
-          <button id="again" class="ghost-btn mono" type="button">↻ AUTRES VARIANTES</button>
+        <button id="gpx" class="cta" type="button">Exporter en GPX</button>
+        <div class="row2">
+          <button id="edit" class="ghost-btn" type="button">Modifier</button>
+          <button id="again" class="ghost-btn" type="button">Autres variantes</button>
         </div>
       </div>
-      <p class="source mono" id="source"></p>
+      <p class="source" id="source"></p>
     </section>
   </aside>
 

@@ -9,11 +9,12 @@ En ligne : https://roovaadii.github.io/D-Routing-/
 - **Départ** : adresse (Nominatim), position GPS ou toucher la carte (le marqueur se déplace).
 - **Distance** : curseur 2–42 km + tolérance ±5 / ±10 / ±20 % (la plage visée).
 - **Modes**
-  - *Boucle* : boucle qui maximise le D+ en enchaînant les vraies montées du coin, sans repasser au même endroit.
-  - *Côte ×N* : trouve la côte la plus rentable à proximité et calcule le nombre de répétitions (ou utilise le nombre choisi). Trois propositions : côte courte, moyenne et longue.
-- **Surface** : mixte, route ou chemin (préférence forte, pas exclusion stricte) ; option « Éviter les escaliers ».
-- **Résultat** : tracé coloré selon la pente, D+ / D−, altitude min–max, D+/km, nombre de montées, profil altimétrique interactif synchronisé avec la carte, 3 variantes, export **GPX**.
-- **Recherche visible** : les parcours candidats se dessinent sur la carte pendant l'optimisation, puis le gagnant se trace.
+  - *Boucle* : boucle qui maximise le D+ en enchaînant les vraies montées du coin.
+  - *Côtes* : en « Auto », la meilleure côte du coin, montée autant de fois que la distance le permet ; avec N répétitions, un circuit de plusieurs côtes, chacune montée N fois.
+- **Options** (pondérations, pas interdictions) : éviter de repasser au même endroit, éviter de reprendre la même rue, même côte au plus ×1 / ×2 / ×3 / ∞, éviter les escaliers. Surface : mixte, route ou chemin.
+- **Résultat** : D+ / D−, altitude min–max, D+/km, nombre de montées, profil altimétrique interactif synchronisé avec la carte, 3 variantes, export **GPX**.
+- **Recherche visible** : la carte part serrée sur le départ puis dézoome pendant l'optimisation ; les parcours candidats se dessinent progressivement, le meilleur en couleur, puis le gagnant se trace.
+- **Rapide** : le terrain est préchargé dès que le départ est placé ; réseau OSM et altitudes IGN gardés en cache (IndexedDB), tuiles de carte et d'altitude en cache (service worker).
 
 ## Données (gratuites / ouvertes)
 
@@ -23,7 +24,7 @@ En ligne : https://roovaadii.github.io/D-Routing-/
 | Altitude en France | IGN RGE ALTI (modèle du **sol nu**, licence ouverte), via le WMS de la Géoplateforme |
 | Altitude ailleurs / secours | Tuiles Terrarium (Mapzen / AWS Open Data : SRTM, etc.) |
 | Géocodage | Nominatim (OpenStreetMap) |
-| Fond de carte | Tuiles OpenStreetMap, désaturées en CSS |
+| Fond de carte | Stadia Maps « Alidade Smooth » (domaine autorisé dans un compte Stadia gratuit), sinon tuiles OpenStreetMap désaturées |
 
 ## Comment le D+ est calculé (et pourquoi c'est fiable)
 

@@ -39,9 +39,9 @@ export function drawProfile(canvas, route, { hoverIdx = -1, reveal = 1 } = {}) {
   const base = h - pad.b;
 
   // Axes discrets
-  ctx.font = '600 9px "JetBrains Mono", ui-monospace, monospace';
-  ctx.fillStyle = '#5D6573';
-  ctx.strokeStyle = '#E1E4EA';
+  ctx.font = '500 10px Archivo, system-ui, sans-serif';
+  ctx.fillStyle = '#71737A';
+  ctx.strokeStyle = '#EAEAEC';
   ctx.lineWidth = 1;
   const stepE = niceStep((hi - lo) / 3);
   for (let e = Math.ceil(lo / stepE) * stepE; e <= hi; e += stepE) {
@@ -50,17 +50,17 @@ export function drawProfile(canvas, route, { hoverIdx = -1, reveal = 1 } = {}) {
     ctx.fillText(`${Math.round(e)}`, 0, y + 3);
   }
   const stepD = niceStep(D / 5 / 1000) * 1000;
-  for (let d = stepD; d < D; d += stepD) ctx.fillText(`${+(d / 1000).toFixed(1)}K`, X(d) - 8, h - 3);
+  for (let d = stepD; d < D; d += stepD) ctx.fillText(`${+(d / 1000).toFixed(1)} km`, X(d) - 12, h - 3);
 
-  // Aire colorée par tranche de pente
+  // Aire grise ; les montées ressortent en couleur d'accent, d'autant plus que c'est raide
   const g = route._grades || (route._grades = grades(route));
   const lim = D * reveal;
   for (let i = 1; i < route.ele.length; i++) {
     if (route.dist[i - 1] > lim) break;
     const x0 = X(route.dist[i - 1]), x1 = X(Math.min(route.dist[i], lim)) + 0.6;
-    const c = GRADE_COLORS[gradeClass(g[i])];
-    ctx.fillStyle = c;
-    ctx.globalAlpha = 0.9;
+    const up = Math.min(1, Math.max(0, (g[i] - 0.02) / 0.10));
+    ctx.fillStyle = up > 0 ? '#FF4D17' : '#E4E4E7';
+    ctx.globalAlpha = up > 0 ? 0.18 + 0.72 * up : 1;
     ctx.beginPath();
     ctx.moveTo(x0, base); ctx.lineTo(x0, Y(route.ele[i - 1])); ctx.lineTo(x1, Y(route.ele[i])); ctx.lineTo(x1, base);
     ctx.fill();
@@ -72,21 +72,21 @@ export function drawProfile(canvas, route, { hoverIdx = -1, reveal = 1 } = {}) {
     const x = X(route.dist[i]), y = Y(route.ele[i]);
     i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
   }
-  ctx.strokeStyle = '#0D1015'; ctx.lineWidth = 1.6; ctx.stroke();
+  ctx.strokeStyle = '#111214'; ctx.lineWidth = 1.4; ctx.stroke();
 
   if (hoverIdx >= 0) {
     const x = X(route.dist[hoverIdx]), y = Y(route.ele[hoverIdx]);
-    ctx.strokeStyle = '#0D1015'; ctx.lineWidth = 1;
+    ctx.strokeStyle = '#111214'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(x, pad.t - 6); ctx.lineTo(x, base); ctx.stroke();
     ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(x, y, 5, 0, 7); ctx.fill();
     ctx.lineWidth = 2.5; ctx.stroke();
-    const label = `${(route.dist[hoverIdx] / 1000).toFixed(2)} KM · ${Math.round(route.ele[hoverIdx])} M · ${(g[hoverIdx] * 100).toFixed(0)} %`;
-    ctx.font = '600 10px "JetBrains Mono", ui-monospace, monospace';
+    const label = `${(route.dist[hoverIdx] / 1000).toFixed(2).replace('.', ',')} km · ${Math.round(route.ele[hoverIdx])} m · ${(g[hoverIdx] * 100).toFixed(0)} %`;
+    ctx.font = '600 11px Archivo, system-ui, sans-serif';
     const tw = ctx.measureText(label).width + 12;
     const lx = Math.min(Math.max(x - tw / 2, pad.l), w - tw);
-    ctx.fillStyle = '#0D1015';
-    roundRect(ctx, lx, 0, tw, 17, 5); ctx.fill();
-    ctx.fillStyle = '#D9FF3B'; ctx.fillText(label, lx + 6, 12);
+    ctx.fillStyle = '#111214';
+    roundRect(ctx, lx, 0, tw, 18, 5); ctx.fill();
+    ctx.fillStyle = '#FFFFFF'; ctx.fillText(label, lx + 6, 13);
   }
   return { pad, w, D };
 }

@@ -76,7 +76,7 @@ class Heap {
 const BETAS = [0, 5, 10, 16]; // intensité de l'attraction vers les pentes
 
 export class Router {
-  constructor(g, surfacePref, { avoidStairs = false } = {}) {
+  constructor(g, surfacePref, { avoidStairs = false, avoidReuse = true, avoidSameStreet = true, hillCap = 0 } = {}) {
     this.g = g;
     const { m, climbOk } = surfaceMultipliers(g, surfacePref, avoidStairs);
     this.mult = m;
@@ -112,7 +112,17 @@ export class Router {
     this.cur = 1;
     this.heap = new Heap(1 << 14);
     this.used = new Uint8Array(g.M);
+    this.streetUsed = new Uint8Array(g.nStreets + 1);
+    // Pondérations (pas d'interdiction) contre les passages répétés
+    this.reuseMul = avoidReuse ? 5 : 1.6;         // même tronçon
+    this.streetMul = avoidSameStreet ? 2.2 : 1;   // même rue (nom OSM)
+    this.hillCap = hillCap;                       // montées max sur une même côte (0 = illimité)
     this.dijkstraCount = 0;
+  }
+
+  resetUsage() { this.used.fill(0); this.streetUsed.fill(0); }
+  markUsed(seg) {
+    for (const [e] of seg) { this.used[e] = 1; const st = this.g.street[e]; if (st >= 0) this.streetUsed[st] = 1; }
   }
 
   /** Arbre des plus courts chemins (coût surface) depuis src, borné en coût. */
@@ -160,7 +170,9 @@ export class Router {
   }
 
   /** A* entre a et b avec coût « pente » et pénalité de réutilisation. */
-  leg(a, b, betaIdx, reuseMul = 4) {
+  leg(a, b, betaIdx) {
+    const { reuseMul, streetMul, streetUsed } = this;
+    const street = this.g.street;
     if (a === b) return [];
     const g = this.g;
     const { c: C, minF } = this.hillCost[betaIdx];
@@ -183,7 +195,8 @@ export class Router {
         const v = g.adjTo[p];
         if (closed[v] === tag) continue;
         const e = g.adjEdge[p];
-        const d = du + (used[e] ? C[e] * reuseMul : C[e]);
+        const st = street[e];
+        const d = du + C[e] * (used[e] ? reuseMul : st >= 0 && streetUsed[st] ? streetMul : 1);
         if (stamp[v] !== tag || d < dist[v]) {
           stamp[v] = tag; dist[v] = d; prevP[v] = p;
           heap.push(d + Math.hypot(g.x[v] - bx, g.y[v] - by) * hf, v);
@@ -208,19 +221,47 @@ export class Router {
     let L = 0, reused = 0, unpaved = 0;
     const seen = new Map();
     const eles = this.eleBuf || (this.eleBuf = []);
-    eles.length = 0;
+    const idx = this.idxBuf || (this.idxBuf = []);
+    eles.length = 0; idx.length = 0;
+    // Passages répétés dans une même rue : une « visite » = suite d'arêtes de la même rue
+    const visits = new Map();
+    let revisit = 0, runStreet = -2;
     for (let k = 0; k < path.length; k++) {
       const [e, rev] = path[k];
       const s0 = g.s0[e], n = g.sn[e];
-      for (let j = k ? 1 : 0; j < n; j++) eles.push(g.sEle[rev ? s0 + n - 1 - j : s0 + j]);
+      for (let j = k ? 1 : 0; j < n; j++) { const i = rev ? s0 + n - 1 - j : s0 + j; eles.push(g.sEle[i]); idx.push(i); }
       L += g.len[e];
+      const st = g.street[e];
+      if (st !== runStreet) { runStreet = st; if (st >= 0) visits.set(st, (visits.get(st) || 0) + 1); }
+      if (st >= 0 && visits.get(st) > 1) revisit += g.len[e];
       if (g.surf[e] === SURF.UNPAVED) unpaved += g.len[e];
       const c = seen.get(e) || 0;
       if (c > 0) reused += g.len[e];
       seen.set(e, c + 1);
     }
     const prof = climbProfile(eles);
-    return { L, up: prof.up, quality: climbQuality(prof.climbs), reused, overlap: L > 0 ? reused / L : 0, unpaved };
+    // Même côte gravie trop souvent : les sommets proches (< 300 m) comptent pour une même côte.
+    let excess = 0;
+    if (this.hillCap > 0) {
+      const hills = []; // {x, y, gains[]}
+      prof.climbs.forEach((gain, k) => {
+        if (gain < 10) return;
+        const i = idx[prof.peaks[k]];
+        const x = (g.sLon[i] - g.center[1]) * 111320 * Math.cos(g.center[0] * Math.PI / 180), y = (g.sLat[i] - g.center[0]) * 110540;
+        let h = hills.find((h) => Math.hypot(h.x - x, h.y - y) < 300);
+        if (!h) { h = { x, y, gains: [] }; hills.push(h); }
+        h.gains.push(gain);
+      });
+      for (const h of hills) {
+        if (h.gains.length <= this.hillCap) continue;
+        h.gains.sort((a, b) => b - a);
+        excess += climbQuality(h.gains.slice(this.hillCap));
+      }
+    }
+    return {
+      L, up: prof.up, quality: climbQuality(prof.climbs), excess, reused, overlap: L > 0 ? reused / L : 0,
+      revisit: L > 0 ? revisit / L : 0, unpaved,
+    };
   }
 }
 
@@ -379,9 +420,16 @@ export function solve(g, params, onProgress = () => {}) {
   const {
     startLatLon, mode = 'loop', dmin, dmax, surface = 'mixed', reps = 0,
     climbLen = 'auto', budgetMs = 3000, seed = 1, avoidStairs = false,
+    avoidReuse = true, avoidSameStreet = true, hillCap = 2,
   } = params;
   const rand = rng(seed);
-  const router = new Router(g, surface, { avoidStairs });
+  const circuit = mode === 'repeat' && reps > 0; // N répétitions de plusieurs côtes
+  const router = new Router(g, surface, {
+    avoidStairs,
+    avoidReuse: circuit ? false : avoidReuse,
+    avoidSameStreet: circuit ? false : avoidSameStreet,
+    hillCap: circuit ? reps : mode === 'loop' ? hillCap : 0,
+  });
   const [sx, sy] = project(g, startLatLon);
   // Départ accroché au réseau principal (pas à un îlot de chemins isolé)
   const minComp = Math.min(g.mainSize, Math.max(200, g.mainSize * 0.2));
@@ -401,10 +449,15 @@ export function solve(g, params, onProgress = () => {}) {
 
   const common = { startNode: s, snapDistance: Math.hypot(g.x[s] - sx, g.y[s] - sy) };
   let routes;
-  if (mode === 'repeat') {
+  if (mode === 'repeat' && !circuit) {
     routes = solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, reps, s, onProgress });
   } else {
-    routes = solveLoop(g, router, tree, climbs, climbPath, { dmin, dmax, target, s, budgetMs, rand, t0, onProgress });
+    routes = solveLoop(g, router, tree, climbs, climbPath, {
+      dmin, dmax, target, s, budgetMs, rand, t0, onProgress,
+      circuitReps: circuit ? reps : 0,
+      wOverlap: circuit ? 0 : avoidReuse ? 1 : 0.25,
+      wStreet: circuit ? 0 : avoidSameStreet ? 0.7 : 0,
+    });
   }
   return {
     ...common,
@@ -493,7 +546,7 @@ function solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, 
 // --- Boucle libre --------------------------------------------------------------------
 
 function solveLoop(g, router, tree, climbs, climbPath, ctx) {
-  const { dmin, dmax, target, s, budgetMs, rand, t0, onProgress } = ctx;
+  const { dmin, dmax, target, s, budgetMs, rand, t0, onProgress, circuitReps = 0, wOverlap = 1, wStreet = 0.7 } = ctx;
   const sx = g.x[s], sy = g.y[s];
   const now = () => performance.now() - t0;
 
@@ -506,6 +559,7 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
     c.ang = Math.atan2((g.y[c.A] + g.y[c.B]) / 2 - sy, (g.x[c.A] + g.x[c.B]) / 2 - sx);
   }
 
+  if (circuitReps && !cands.length) throw new Error('Aucune côte assez marquée à proximité pour un circuit de répétitions.');
   const r0 = target / (2 * Math.PI);
 
   // Accroche un point à un nœud accessible, en privilégiant le haut ou le bas.
@@ -529,16 +583,22 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
   };
 
   const evaluate = (sol) => {
-    router.used.fill(0);
+    router.resetUsage();
     const path = [];
     let cur = s;
-    const add = (seg) => { for (const t of seg) { path.push(t); router.used[t[0]] = 1; } };
+    const add = (seg) => { for (const t of seg) path.push(t); router.markUsed(seg); };
     for (const el of sol.els) {
       const tgt = el.t === 'w' ? el.n : el.c.A;
       const leg = router.leg(cur, tgt, sol.beta);
       if (!leg) return null;
       add(leg);
-      if (el.t === 'c') { add(climbPath(el.c)); cur = el.c.B; } else cur = tgt;
+      if (el.t === 'c') {
+        const up = climbPath(el.c);
+        add(up);
+        // Circuit de côtes : chaque côte est répétée N fois (descente + remontée)
+        for (let r = 1; r < (circuitReps || 1); r++) { add(reversePath(up)); add(up); }
+        cur = el.c.B;
+      } else cur = tgt;
     }
     const back = router.leg(cur, s, sol.beta);
     if (!back) return null;
@@ -546,7 +606,8 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
     const st = router.stats(path);
     const upPerKm = st.up / Math.max(st.L / 1000, 0.1);
     // On optimise la « qualité » des montées (les mini-bosses ne rapportent rien).
-    const score = st.quality * (1 - 0.8 * st.overlap) - distPenalty(st.L, dmin, dmax, upPerKm);
+    const q = st.quality - 1.5 * st.excess;
+    const score = q * (1 - wOverlap * st.overlap) * (1 - wStreet * st.revisit) - distPenalty(st.L, dmin, dmax, upPerKm);
     return { path, ...st, score };
   };
 
@@ -569,6 +630,14 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
 
   const newSolution = () => {
     const sol = { els: [], beta: 1 + Math.floor(rand() * 3), dir: rand() < 0.5 ? 1 : -1, a0: rand() * 2 * Math.PI };
+    if (circuitReps) {
+      const k = 1 + Math.floor(rand() * Math.min(3, cands.length));
+      const set = new Set();
+      while (set.size < k) set.add(pickClimb());
+      for (const c of set) sol.els.push({ t: 'c', c });
+      order(sol);
+      return sol;
+    }
     const kind = rand();
     if (cands.length && kind < 0.65) {
       const k = 1 + Math.floor(rand() * Math.min(3, cands.length));
@@ -592,6 +661,20 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
     const L = res.L;
     const tooLong = L > dmax, tooShort = L < dmin;
     const r = rand();
+    if (circuitReps) {
+      // Circuit de côtes : on ajoute, retire ou remplace des côtes
+      if (tooLong && sol.els.length > 1) sol.els.splice(Math.floor(rand() * sol.els.length), 1);
+      else if (tooShort || r < 0.2) sol.els.push({ t: 'c', c: pickClimb() });
+      else if (r < 0.65) sol.els[Math.floor(rand() * sol.els.length)] = { t: 'c', c: pickClimb() };
+      else if (r < 0.8 && sol.els.length > 1) sol.els.splice(Math.floor(rand() * sol.els.length), 1);
+      else if (r < 0.9) sol.beta = Math.floor(rand() * BETAS.length);
+      else sol.dir = -sol.dir;
+      const seen = new Set();
+      sol.els = sol.els.filter((e) => !seen.has(e.c.slot) && seen.add(e.c.slot));
+      if (!sol.els.length) sol.els.push({ t: 'c', c: pickClimb() });
+      order(sol);
+      return sol;
+    }
     const wps = sol.els.map((e, i) => [e, i]).filter(([e]) => e.t === 'w');
     if ((tooLong || tooShort) && wps.length && r < 0.6) {
       // Mise à l'échelle des points de passage libres
@@ -706,7 +789,7 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
 
   // Résultats variés : on écarte les tracés trop semblables.
   const out = [];
-  for (const { res } of pool) {
+  for (const { sol, res } of pool) {
     const set = new Set(res.path.map(([e]) => e));
     const similar = out.some((o) => {
       let inter = 0;
@@ -714,10 +797,15 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
       return inter / Math.min(set.size, o.set.size) > 0.6;
     });
     if (similar) continue;
-    out.push({ set, res });
+    out.push({ set, res, sol });
     if (out.length >= 3) break;
   }
-  return out.map(({ res }) => ({
-    path: res.path, kind: 'loop', score: res.score, overlap: res.overlap, evals,
+  return out.map(({ res, sol }) => ({
+    path: res.path, kind: circuitReps ? 'circuit' : 'loop', score: res.score, overlap: res.overlap,
+    revisit: res.revisit, evals,
+    circuit: circuitReps ? sol.els.map((e) => ({
+      length: e.c.len, gain: e.c.gain, grade: e.c.grade, reps: circuitReps,
+      top: [g.lat[e.c.B], g.lon[e.c.B]],
+    })) : undefined,
   }));
 }
