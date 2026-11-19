@@ -1,6 +1,6 @@
 // Réseau OSM téléchargé par tuiles (~2 km) plutôt qu'en une seule grosse requête :
 // - chaque requête Overpass reste petite (rapide, pas de dépassement de délai côté serveur) ;
-// - deux à la fois au plus (Overpass limite les places par adresse IP) ;
+// - trois à la fois au plus, une par machine du serveur principal (places limitées par adresse IP) ;
 // - les tuiles proches du départ d'abord ; chaque tuile est gardée en cache (IndexedDB),
 //   donc déplacer le départ ou changer la distance ne retélécharge que ce qui manque ;
 // - une tuile en échec est retentée seule, sans perdre les autres.
@@ -8,7 +8,7 @@ import { fetchOsm, slimOsm } from './osm.js';
 import { tileIndex, getTile, putTile } from './cache.js';
 
 const TLAT = 0.02, TLON = 0.03; // ~2,2 km × ~2,2 km en France
-const PARALLEL = 2;
+const PARALLEL = 3; // une requête par machine du serveur principal
 
 /** Tuiles (grille fixe, réutilisable d'une zone à l'autre) couvrant une bbox. */
 export function tilesFor(b, [lat0, lon0]) {
@@ -42,8 +42,10 @@ export async function loadOsmTiles(bbox, center, { signal, onProgress, onStatus,
 
   const todo = tiles.filter((t) => !parts.has(t.id));
   const failed = [];
+  let turn = 0;
   const fetchTile = async (t) => {
-    const text = await fetchOsm(t, { signal, timeoutMs: 25000, onStatus, onLog: (m) => log(`tuile ${t.id} : ${m}`) });
+    // Serveur de départ en rotation : les requêtes parallèles ne visent pas la même machine.
+    const text = await fetchOsm(t, { signal, timeoutMs: 15000, start: turn++, onStatus, onLog: (m) => log(`tuile ${t.id} : ${m}`) });
     const slim = JSON.stringify(slimOsm(text));
     parts.set(t.id, slim);
     putTile(idx, t.id, slim);

@@ -246,7 +246,7 @@ export function tween(ms, onFrame, { ease = (t) => t, alive = () => true } = {})
 
 const RINGS = 10;          // anneaux du réseau autour du départ (serrés près de lui)
 const CELL = 55;           // taille d'une tuile de la grille de téléchargement (m)
-const GRID_MAX = 2600;     // rayon couvert par la grille (m) : au-delà, hors champ pendant le chargement
+const CELLS_MAX = 12000;   // nombre de tuiles au plus (les grandes zones ont des tuiles un peu plus grandes)
 const WAVES = 24;          // couches de la vague (une par couronne, vitesse constante)
 const WAVE_MS = 1600;      // période de la vague
 const WAVE_STEP = 45;      // décalage entre deux couronnes (ms) : la vague traverse en ~1 s
@@ -258,15 +258,17 @@ const mPerDeg = (lat) => [111320 * Math.cos(lat * Math.PI / 180), 111320];
 /** Grille de petites tuiles carrées autour du départ, rangées par couronne (pour la vague). */
 function cellGrid([lat, lon], radius) {
   const [kx, ky] = mPerDeg(lat);
-  const R = Math.min(radius, GRID_MAX);
-  const n = Math.ceil(R / CELL), features = [];
+  // La grille couvre toute la zone chargée, comme le disque du relief.
+  const R = radius;
+  const cell = Math.max(CELL, R * Math.sqrt(Math.PI / CELLS_MAX));
+  const n = Math.ceil(R / cell), features = [];
   for (let i = -n; i < n; i++) {
     for (let j = -n; j < n; j++) {
-      const cx = (i + 0.5) * CELL, cy = (j + 0.5) * CELL, d = Math.hypot(cx, cy);
+      const cx = (i + 0.5) * cell, cy = (j + 0.5) * cell, d = Math.hypot(cx, cy);
       if (d > R) continue;
       const g = 1.2; // joint (m de chaque côté) : environ 1 pixel au zoom du chargement
-      const x0 = lon + (i * CELL + g) / kx, x1 = lon + ((i + 1) * CELL - g) / kx;
-      const y0 = lat + (j * CELL + g) / ky, y1 = lat + ((j + 1) * CELL - g) / ky;
+      const x0 = lon + (i * cell + g) / kx, x1 = lon + ((i + 1) * cell - g) / kx;
+      const y0 = lat + (j * cell + g) / ky, y1 = lat + ((j + 1) * cell - g) / ky;
       features.push({ type: 'Feature', properties: { w: Math.min(WAVES - 1, Math.floor((d / R) * WAVES)) },
         geometry: { type: 'Polygon', coordinates: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]] } });
     }
@@ -387,7 +389,7 @@ export class TerrainFx {
   /** Progression des altitudes (0 → 1) : le disque de relief s'agrandit. */
   setRelief(f) {
     // Croissance quadratique : le bord du disque traverse d'abord la partie visible (près du départ).
-    this.veilTarget = Math.max(this.veilTarget, f * f * this.radius * 1.15);
+    this.veilTarget = Math.max(this.veilTarget, f * f * this.radius);
     if (this.rm) { this._setVeil(this.veilTarget); return; }
     if (this.raf) return;
     const step = () => {
@@ -399,7 +401,6 @@ export class TerrainFx {
   }
   _setVeil(r) {
     this.veilR = r;
-    if (r >= this.radius * 1.14) { this._show('fx-veil', false); this._show('fx-edge', false); return; }
     this.map.getSource('fx-veil').setData(veil(this.center, r, this.radius * 3));
   }
 

@@ -1,7 +1,10 @@
 // Téléchargement du réseau praticable à pied depuis OpenStreetMap (API Overpass).
 
 export const OVERPASS_ENDPOINTS = [
+  // Serveur principal et ses deux machines (charges indépendantes), puis les serveurs de secours.
   'https://overpass-api.de/api/interpreter',
+  'https://lz4.overpass-api.de/api/interpreter',
+  'https://z.overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
@@ -62,10 +65,14 @@ const sleep = (ms, signal) => new Promise((resolve) => {
  * Un serveur « occupé » (429 / 504 : places limitées par adresse IP, et une requête abandonnée
  * continue d'en occuper une) est attendu puis réessayé avant de passer au suivant.
  */
-export async function fetchOsm(bbox, { onStatus, onLog, timeoutMs = 35000, signal } = {}) {
+export async function fetchOsm(bbox, { onStatus, onLog, timeoutMs = 35000, signal, start = 0 } = {}) {
   const body = 'data=' + encodeURIComponent(overpassQuery(bbox));
   let lastErr;
-  for (const url of OVERPASS_ENDPOINTS) {
+  // Ordre des serveurs : les trois machines principales en rotation (répartit les requêtes
+  // parallèles), puis les serveurs de secours.
+  const main = OVERPASS_ENDPOINTS.slice(0, 3), backup = OVERPASS_ENDPOINTS.slice(3);
+  const order = [...main.slice(start % 3), ...main.slice(0, start % 3), ...backup];
+  for (const url of order) {
     const host = new URL(url).host;
     const name = host.split('.').slice(-2, -1)[0];
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -89,7 +96,8 @@ export async function fetchOsm(bbox, { onStatus, onLog, timeoutMs = 35000, signa
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           signal: ctrl.signal,
         });
-        if (res.status === 429 || res.status === 504) { busy = true; throw new Error(`${host} : occupé (HTTP ${res.status})`); }
+        // Surcharge passagère (trop de requêtes, passerelle saturée) : on attendra puis on réessaiera.
+        if ([429, 502, 503, 504].includes(res.status)) { busy = res.status; throw new Error(`${host} : occupé (HTTP ${res.status})`); }
         if (!res.ok) throw new Error(`${host} : HTTP ${res.status}`);
         clearTimeout(timer);
         timer = setTimeout(() => ctrl.abort(), 120000);
@@ -122,10 +130,11 @@ export async function fetchOsm(bbox, { onStatus, onLog, timeoutMs = 35000, signa
         clearInterval(tick);
         signal?.removeEventListener('abort', stop);
       }
-      if (!busy || attempt === 2) break;
+      // 429 : on attend la place annoncée (2 essais) ; 50x : un seul nouvel essai, puis serveur suivant.
+      if (!busy || attempt === 2 || (busy !== 429 && attempt === 1)) break;
       // Serveur occupé : on attend qu'une place se libère, puis on réessaie le même serveur.
-      const w = Math.min(await slotWait(url), 45);
-      onLog?.(`${host} : place libre dans ${w} s, on attend`);
+      const w = busy === 429 ? Math.min(await slotWait(url), 45) : 3;
+      onLog?.(busy === 429 ? `${host} : place libre dans ${w} s, on attend` : `${host} : nouvel essai dans ${w} s`);
       const until = performance.now() + w * 1000;
       const count = setInterval(() => onStatus?.(`serveur occupé · ${Math.max(0, Math.round((until - performance.now()) / 1000))} s`), 500);
       await sleep(w * 1000, signal);
