@@ -22,7 +22,7 @@ const fontCss = `
 @font-face{font-family:"JetBrains Mono";src:url(https://fonts.local/mono600.woff2) format("woff2");font-weight:600;}`;
 
 async function run(name, viewport, mode) {
-  const browser = await chromium.launch({ proxy: { server: process.env.HTTPS_PROXY, bypass: '127.0.0.1,localhost' } });
+  const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'], proxy: { server: process.env.HTTPS_PROXY, bypass: '127.0.0.1,localhost' } });
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1 });
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.log('pageerror:', e.message));

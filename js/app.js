@@ -5,12 +5,12 @@ import { loadDem, browserDecode, inFrance, loadIgnDem, validateIgn } from './ele
 import { drawProfile, indexAt } from './profile.js';
 import { toGpx, downloadText } from './gpx.js';
 import { findCovering, save } from './cache.js';
+import { maplibregl, createMap, tokens, RevealLine, TerrainFx, interleavedToLngLat, tween } from './map.js';
 
 const $ = (id) => document.getElementById(id);
-const L = window.L;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const isMobile = () => innerWidth <= 720;
-const ACCENT = '#FF4D17', INK = '#111214';
+const T = tokens();
 const fmtKm = (m) => (m / 1000).toLocaleString('fr-FR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 const fmtInt = (x) => Math.round(x).toLocaleString('fr-FR');
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -18,49 +18,53 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 
 // --- Carte -------------------------------------------------------------------
-const map = L.map('map', { zoomControl: false, zoomSnap: 0.1 }).setView([48.8566, 2.3522], 13);
-if (!isMobile()) L.control.zoom({ position: 'bottomright' }).addTo(map);
+const map = createMap('map', { center: [2.3522, 48.8566], zoom: 13 });
+const mapReady = new Promise((resolve) => map.once('load', resolve));
+const llOf = (lat, lon) => [lon, lat];
 
-// Fond Stadia « Alidade Smooth » (domaine autorisé dans le compte Stadia, sans clé).
-// S'il refuse les tuiles, on bascule sur OpenStreetMap désaturé.
-const stadia = L.tileLayer('https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png', {
-  maxZoom: 20, crossOrigin: true,
-  attribution: '© <a href="https://stadiamaps.com/">Stadia Maps</a> © <a href="https://openmaptiles.org/">OpenMapTiles</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-});
-const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19, crossOrigin: true, className: 'basemap-osm',
-  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-});
-let tileOk = 0, tileErr = 0;
-stadia.on('tileload', () => { tileOk++; });
-stadia.on('tileerror', () => {
-  if (++tileErr >= 4 && tileOk === 0 && map.hasLayer(stadia)) { map.removeLayer(stadia); osm.addTo(map); }
-});
-stadia.addTo(map);
-
-const ghostLayer = L.layerGroup().addTo(map);
-const routeLayer = L.layerGroup().addTo(map);
+const pin = (cls, html = '') => { const el = document.createElement('div'); el.className = cls; el.innerHTML = html; return el; };
 let start = null;
-const startMarker = L.marker([0, 0], { draggable: true, icon: L.divIcon({ className: 'pin-start', iconSize: [18, 18] }), zIndexOffset: 1000 });
-startMarker.on('dragend', () => setStart(startMarker.getLatLng(), { pan: false }));
-const cursor = L.marker([0, 0], { icon: L.divIcon({ className: 'pin-cursor', iconSize: [14, 14] }), interactive: false, zIndexOffset: 900 });
-map.on('click', (e) => { if (state === 'setup') setStart(e.latlng, { pan: false }); });
+const startEl = pin('pin-start');
+startEl.setAttribute('aria-label', 'Départ (déplaçable)');
+const startMarker = new maplibregl.Marker({ element: startEl, draggable: true });
+startMarker.on('dragend', () => setStart(startMarker.getLngLat(), { pan: false }));
+const cursor = new maplibregl.Marker({ element: pin('pin-cursor') });
+const meMarker = new maplibregl.Marker({ element: pin('pin-me') });
+let flags = [];
+map.on('click', (e) => { if (state === 'setup') setStart(e.lngLat, { pan: false }); });
 
-/** Centre la carte sur un point dans la zone visible (hors panneau). */
-function flyToVisible(ll, zoom, duration = 0.8) {
+/** Zone de la carte non couverte par le panneau (pixels). */
+function visibleBox() {
   const r = $('sheet').getBoundingClientRect();
-  const dx = isMobile() ? 0 : -(r.right / 2);
-  const dy = isMobile() ? (innerHeight - r.top) / 2 : 0;
-  const c = map.unproject(map.project(ll, zoom).add([dx, dy]), zoom);
-  map.flyTo(c, zoom, { duration: reduceMotion ? 0 : duration });
+  return isMobile() ? { left: 0, top: 0, right: innerWidth, bottom: r.top } : { left: r.right, top: 0, right: innerWidth, bottom: innerHeight };
 }
-
+/** Centre un point dans la zone visible : décalage par rapport au centre de la carte. */
+function visibleOffset() {
+  const b = visibleBox();
+  return [(b.left + b.right) / 2 - innerWidth / 2, (b.top + b.bottom) / 2 - innerHeight / 2];
+}
+function flyToVisible(lngLat, zoom, duration = 800) {
+  map.flyTo({ center: lngLat, zoom, offset: visibleOffset(), duration: reduceMotion ? 0 : duration });
+}
 function mapPadding() {
   const r = $('sheet').getBoundingClientRect();
   return isMobile()
-    ? { paddingTopLeft: [24, 48], paddingBottomRight: [24, innerHeight - r.top + 24] }
-    : { paddingTopLeft: [r.right + 40, 40], paddingBottomRight: [40, 40] };
+    ? { top: 56, left: 24, right: 24, bottom: innerHeight - r.top + 24 }
+    : { top: 40, left: r.right + 40, right: 40, bottom: 40 };
 }
+const boundsAround = ([lat, lon], r) => {
+  const dLat = r / 111320, dLon = r / (111320 * Math.cos(lat * Math.PI / 180));
+  return [[lon - dLon, lat - dLat], [lon + dLon, lat + dLat]];
+};
+
+// Couches animées (créées quand le style est prêt)
+let fx = null, ghosts = [], bests = [], route = null;
+mapReady.then(() => {
+  fx = new TerrainFx(map, T, { reduceMotion });
+  for (let i = 0; i < 16; i++) ghosts.push(Object.assign(new RevealLine(map, `ghost-${i}`, { color: T.ink, width: 1.6, opacity: 0.38 }), { busy: false }));
+  for (let i = 0; i < 2; i++) bests.push(new RevealLine(map, `best-${i}`, { color: T.accent, width: 3, opacity: 0.95 }));
+  route = new RevealLine(map, 'route', { color: T.accent, width: 4.5, casing: { color: T.bg, width: 9 } });
+});
 
 // --- États du panneau --------------------------------------------------------------
 let state = 'setup';
@@ -95,8 +99,8 @@ const savePrefs = () => {
 // --- Départ ---------------------------------------------------------------------
 async function setStart(ll, { pan = true, label = null } = {}) {
   start = [ll.lat, ll.lng];
-  startMarker.setLatLng(ll).addTo(map);
-  if (pan) flyToVisible(L.latLng(ll), Math.max(map.getZoom(), 15));
+  startMarker.setLngLat([ll.lng, ll.lat]).addTo(map);
+  if (pan) flyToVisible([ll.lng, ll.lat], Math.max(map.getZoom(), 15));
   $('suggestions').hidden = true;
   hint('');
   preloadSoon();
@@ -142,7 +146,6 @@ $('addressForm').addEventListener('submit', async (e) => {
 const shortName = (x) => x.display_name.split(',').slice(0, 3).join(',');
 
 // Géolocalisation : place directement le départ sur ma position
-const meMarker = L.marker([0, 0], { icon: L.divIcon({ className: 'pin-me', iconSize: [16, 16] }), interactive: false, zIndexOffset: 800 });
 function locateMe() {
   if (!navigator.geolocation) return hint('Géolocalisation indisponible sur cet appareil.', true);
   if (state !== 'setup') setState('setup');
@@ -152,8 +155,8 @@ function locateMe() {
     (p) => {
       $('geoBtn').classList.remove('busy');
       const ll = { lat: p.coords.latitude, lng: p.coords.longitude };
-      meMarker.setLatLng(ll).addTo(map);
-      routeLayer.clearLayers();
+      meMarker.setLngLat([ll.lng, ll.lat]).addTo(map);
+      clearRoute();
       setStart(ll);
     },
     (err) => {
@@ -259,18 +262,21 @@ async function loadArea(center, r) {
   const bbox = bboxAround(center[0], center[1], r);
   const t0 = performance.now();
   step('osm', 'on'); step('dem', 'on'); step('graph', '');
+  await mapReady;
+  fx.begin(center, r);
 
   const osmP = (async () => {
     const hit = await findCovering('osm', bbox);
-    if (hit) { step('osm', 'done', 'en cache'); return hit.data; }
+    if (hit) { step('osm', 'done', 'en cache'); fx.network(hit.data); return hit.data; }
     const text = await fetchOsm(bbox, { onStatus: (t) => step('osm', 'on', t.toLowerCase()) });
     step('osm', 'done', `${(text.length / 1e6).toFixed(1)} Mo`);
+    fx.network(text);
     save('osm', bbox, text);
     return text;
   })();
 
   const demP = (async () => {
-    const terrarium = await loadDem(bbox, browserDecode, { onProgress: (f) => step('dem', 'on', `${Math.round(f * 100)} %`) });
+    const terrarium = await loadDem(bbox, browserDecode, { onProgress: (f) => { step('dem', 'on', `${Math.round(f * 100)} %`); fx.setRelief(f * 0.9); } });
     if (inFrance(bbox)) {
       let ign = await findCovering('ign', bbox);
       let dem = ign ? { ...ign.data, fallback: terrarium } : null;
@@ -287,6 +293,7 @@ async function loadArea(center, r) {
   })();
 
   const [osmText, dem] = await Promise.all([osmP, demP]);
+  fx.setRelief(1);
   step('graph', 'on');
   const built = await call({ type: 'build', osmText, dem, center });
   if (!built.nodes) throw new Error('Aucune voie praticable dans cette zone.');
@@ -304,44 +311,20 @@ function preloadSoon() {
     const c = start;
     $('preload').textContent = 'Préparation du terrain autour du départ…';
     ensureArea(c, areaRadius())
-      .then(() => { if (start === c) $('preload').textContent = 'Terrain prêt.'; })
-      .catch(() => { $('preload').textContent = ''; });
+      .then(() => { if (start === c) $('preload').textContent = 'Terrain prêt.'; if (state === 'setup') fx?.clear(900); })
+      .catch(() => { $('preload').textContent = ''; fx?.clear(); });
   }, 500);
 }
 
 // --- Animation de la recherche ---------------------------------------------------------------
-const toLatLngs = (c) => { const out = []; for (let i = 0; i < c.length; i += 2) out.push(L.latLng(c[i], c[i + 1])); return out; };
+let searchToken = 0;
+const easeOut2 = (t) => 1 - Math.pow(1 - t, 2);
 
-/** Dessine progressivement une ligne (indépendant du zoom : on fait grandir la géométrie). */
-function animateLine(line, pts, ms) {
-  return new Promise((resolve) => {
-    if (reduceMotion || ms <= 0 || pts.length < 2) { line.setLatLngs(pts); return resolve(); }
-    const cum = [0];
-    for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + pts[i - 1].distanceTo(pts[i]));
-    const total = cum[cum.length - 1] || 1;
-    const t0 = performance.now();
-    let i = 1;
-    const frame = (now) => {
-      const k = Math.min(1, (now - t0) / ms);
-      const d = total * (1 - Math.pow(1 - k, 2));
-      while (i < pts.length - 1 && cum[i] < d) i++;
-      const a = pts[i - 1], b = pts[i];
-      const f = Math.min(1, Math.max(0, (d - cum[i - 1]) / (cum[i] - cum[i - 1] || 1)));
-      const head = L.latLng(a.lat + (b.lat - a.lat) * f, a.lng + (b.lng - a.lng) * f);
-      line.setLatLngs([...pts.slice(0, i), head]);
-      if (k < 1) requestAnimationFrame(frame); else { line.setLatLngs(pts); resolve(); }
-    };
-    requestAnimationFrame(frame);
-  });
-}
-
-function fadeOut(line, ms, remove = true) {
-  const el = line.getElement?.();
-  if (el && !reduceMotion) {
-    el.style.transition = `opacity ${ms}ms ease`;
-    requestAnimationFrame(() => { el.style.opacity = '0'; });
-  }
-  if (remove) setTimeout(() => ghostLayer.removeLayer(line), reduceMotion ? 0 : ms + 50);
+/** Dévoile une ligne sur ms millisecondes (le dégradé avance, la géométrie ne bouge pas). */
+async function revealLine(line, coords, ms, token = searchToken) {
+  await line.set(coords);
+  if (reduceMotion || ms <= 0) { line.show(1); return true; }
+  return tween(ms, (k) => line.show(k), { ease: easeOut2, alive: () => token === searchToken });
 }
 
 // File d'attente : les candidats arrivent par paquets, on les dessine à un rythme régulier.
@@ -350,13 +333,16 @@ let pump = 0, alive = 0;
 function enqueue(coords) { if (queue.length < 40) queue.push(coords); if (!pump) pump = setInterval(drawNext, 70); }
 function drawNext() {
   if (!queue.length) { clearInterval(pump); pump = 0; return; }
-  if (alive > 14) return;
-  const pts = toLatLngs(queue.shift());
-  const line = L.polyline([pts[0]], { color: INK, weight: 1.6, opacity: 0.38, interactive: false, lineJoin: 'round' }).addTo(ghostLayer);
-  alive++;
-  animateLine(line, pts, 650).then(() => {
-    fadeOut(line, 1600);
-    setTimeout(() => { alive--; }, 400);
+  const slot = ghosts.find((g) => !g.busy);
+  if (!slot || alive > 14) return;
+  const coords = interleavedToLngLat(queue.shift());
+  const token = searchToken;
+  slot.busy = true; alive++;
+  revealLine(slot, coords, 650, token).then(() => {
+    if (token !== searchToken) return;
+    slot.fade(0, reduceMotion ? 0 : 1600);
+    setTimeout(() => { alive = Math.max(0, alive - 1); }, 400);
+    setTimeout(() => { if (token === searchToken) slot.busy = false; }, reduceMotion ? 0 : 1650);
   });
 }
 async function drainQueue(maxMs) {
@@ -364,17 +350,33 @@ async function drainQueue(maxMs) {
   while ((queue.length || alive > 0) && performance.now() - t0 < maxMs) await wait(60);
 }
 
-let bestLine = null, bestKey = '';
+let bestKey = '', bestIdx = 0;
 function showBest(coords) {
   const key = `${coords.length}:${coords[2]}:${coords[coords.length - 3]}`;
-  if (key === bestKey) return;
+  if (key === bestKey || !bests.length) return;
   bestKey = key;
-  if (bestLine) fadeOut(bestLine, 500);
-  const pts = toLatLngs(coords);
-  bestLine = L.polyline([pts[0]], { color: ACCENT, weight: 3, opacity: 0.95, interactive: false, lineJoin: 'round', lineCap: 'round' }).addTo(ghostLayer);
-  animateLine(bestLine, pts, 700);
+  bests[bestIdx].fade(0, reduceMotion ? 0 : 500);
+  bestIdx = 1 - bestIdx;
+  revealLine(bests[bestIdx], interleavedToLngLat(coords), 700);
 }
-function clearSearch() { queue.length = 0; clearInterval(pump); pump = 0; ghostLayer.clearLayers(); bestLine = null; bestKey = ''; alive = 0; }
+/** Efface les traces de la recherche (fondu de ms millisecondes). */
+function clearSearch(ms = 0) {
+  searchToken++;
+  queue.length = 0; clearInterval(pump); pump = 0; alive = 0; bestKey = '';
+  for (const g of [...ghosts, ...bests]) g.fade(0, reduceMotion ? 0 : ms);
+  const token = searchToken;
+  setTimeout(() => {
+    if (token !== searchToken) return;
+    for (const g of [...ghosts, ...bests]) { g.clear(); g.busy = false; }
+  }, (reduceMotion ? 0 : ms) + 50);
+}
+function clearRoute() {
+  animToken++;
+  route?.clear();
+  for (const f of flags) f.remove();
+  flags = [];
+  cursor.remove();
+}
 
 let liveBest = 0;
 function setLive(evals, best) {
@@ -398,19 +400,22 @@ async function generate() {
   $('searchPct').textContent = '';
   step('search', '', '');
   liveBest = 0; setLive(0, null); $('liveBest').textContent = '—'; $('bar').style.width = '0';
-  routeLayer.clearLayers(); clearSearch(); cursor.remove();
+  await mapReady;
+  clearRoute(); clearSearch();
   // On part serré sur le départ…
-  flyToVisible(L.latLng(start), 16, 0.7);
+  flyToVisible(llOf(...start), 16, 700);
 
   try {
     await ensureArea(start, areaRadius());
+    fx.clear();
     $('searchTitle').textContent = 'Recherche du meilleur parcours';
     step('search', 'on');
     // … puis on dézoome progressivement pendant la recherche.
     const reach = Math.min(dmax * 1000 * 0.32, 8000);
-    if (!reduceMotion) {
-      map.flyToBounds(L.latLng(start).toBounds(reach * 2), { ...mapPadding(), duration: BUDGET / 1000 + 0.6, easeLinearity: 0.05 });
-    }
+    const dezoom = (ms) => {
+      if (!reduceMotion) map.fitBounds(boundsAround(start, reach), { padding: mapPadding(), linear: true, duration: ms, easing: (t) => t });
+    };
+    dezoom(BUDGET + 600);
     let explored = [];
     const params = {
       startLatLon: start, mode, dmin: dmin * 1000, dmax: dmax * 1000, reps: mode === 'repeat' ? reps : 0,
@@ -430,13 +435,13 @@ async function generate() {
     });
     // Mode « côte » : la recherche est instantanée, on rejoue les côtes examinées.
     if (explored.length && !reduceMotion) {
-      const T = 1800, k = explored.length;
-      map.flyToBounds(L.latLng(start).toBounds(reach * 2), { ...mapPadding(), duration: T / 1000, easeLinearity: 0.05 });
+      const D = 1800, k = explored.length;
+      dezoom(D);
       for (let i = 0; i < k; i++) {
         enqueue(explored[i].coords);
         setLive(i + 1, explored[i].up);
         $('bar').style.width = `${((i + 1) / k) * 100}%`;
-        await wait(T / k);
+        await wait(D / k);
       }
     }
     await drainQueue(1200);
@@ -444,15 +449,14 @@ async function generate() {
     if (!results.length) throw new Error('Aucun parcours trouvé ici. Essaie une autre distance, une autre surface ou un autre départ.');
     step('search', 'done', `${(res.result.timeMs / 1000).toFixed(1)} s`);
     $('bar').style.width = '100%';
-    queue.length = 0;
-    ghostLayer.eachLayer((l) => fadeOut(l, 500, false));
-    setTimeout(clearSearch, 550);
+    clearSearch(500);
     setState('result');
     renderVariants();
     await show(0, true);
   } catch (e) {
     console.error(e);
     clearSearch();
+    fx?.clear();
     setState('setup');
     hint(e.message, true);
   }
@@ -460,7 +464,7 @@ async function generate() {
 
 $('go').onclick = () => generate();
 $('again').onclick = () => generate();
-$('edit').onclick = () => { setState('setup'); hint(''); routeLayer.clearLayers(); cursor.remove(); };
+$('edit').onclick = () => { setState('setup'); hint(''); clearRoute(); };
 
 // --- Résultats ----------------------------------------------------------------------------------
 function renderVariants() {
@@ -523,30 +527,29 @@ function countUp(el, to, fmt) {
 }
 
 async function drawRoute(r, animate, token) {
-  routeLayer.clearLayers();
-  const pts = Array.from(r.lat, (la, k) => L.latLng(la, r.lon[k]));
-  const bounds = L.latLngBounds(pts);
-  map.flyToBounds(bounds, { ...mapPadding(), duration: animate ? 0.7 : 0 });
-  const casing = L.polyline([pts[0]], { color: '#FFFFFF', weight: 9, opacity: 1, interactive: false, lineCap: 'round', lineJoin: 'round' }).addTo(routeLayer);
-  const line = L.polyline([pts[0]], { color: ACCENT, weight: 4.5, opacity: 1, interactive: false, lineCap: 'round', lineJoin: 'round' }).addTo(routeLayer);
+  route.clear();
+  for (const f of flags) f.remove();
+  flags = [];
+  const coords = Array.from(r.lat, (la, k) => [r.lon[k], la]);
+  const bounds = coords.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(coords[0], coords[0]));
+  map.fitBounds(bounds, { padding: mapPadding(), duration: animate ? 700 : 0, maxZoom: 17 });
   const tops = r.kind === 'repeat' ? [{ top: r.climb.top, label: `×${r.climb.reps}` }]
     : r.kind === 'circuit' ? r.circuit.map((c) => ({ top: c.top, label: `×${c.reps}` })) : [];
-  const T = animate ? 1500 : 0;
+  const D = animate ? 1500 : 0;
+  await route.set(coords);
   if (animate) await wait(700);
   if (token !== animToken) return;
   // Tracé et profil se dessinent ensemble
-  const t0 = performance.now();
-  const frame = (now) => {
-    if (token !== animToken) return;
-    const k = T ? Math.min(1, (now - t0) / T) : 1;
-    profileGeom = drawProfile($('profile'), r, { reveal: 1 - Math.pow(1 - k, 2) });
-    if (k < 1) requestAnimationFrame(frame);
-  };
-  requestAnimationFrame(frame);
-  await Promise.all([animateLine(casing, pts, T), animateLine(line, pts, T)]);
+  await tween(D, (k) => {
+    route.show(k);
+    profileGeom = drawProfile($('profile'), r, { reveal: k });
+  }, { ease: easeOut2, alive: () => token === animToken });
   if (token !== animToken) return;
   for (const t of tops) {
-    L.marker(t.top, { icon: L.divIcon({ className: '', html: `<span class="pin-flag">${t.label}</span>`, iconSize: [0, 0] }), interactive: false }).addTo(routeLayer);
+    const el = document.createElement('div');
+    el.className = 'flag';
+    el.innerHTML = `<span class="pin-flag">${t.label}</span>`;
+    flags.push(new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -6] }).setLngLat(llOf(t.top[0], t.top[1])).addTo(map));
   }
 }
 
@@ -557,7 +560,7 @@ function hoverAt(clientX) {
   const rect = $('profile').getBoundingClientRect();
   const i = indexAt(r, clientX - rect.left, profileGeom);
   profileGeom = drawProfile($('profile'), r, { hoverIdx: i });
-  cursor.setLatLng([r.lat[i], r.lon[i]]).addTo(map);
+  cursor.setLngLat([r.lon[i], r.lat[i]]).addTo(map);
 }
 $('profile').addEventListener('pointermove', (e) => hoverAt(e.clientX));
 $('profile').addEventListener('pointerdown', (e) => hoverAt(e.clientX));

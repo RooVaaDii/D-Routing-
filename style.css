@@ -8,6 +8,18 @@
   --rule: #EAEAEC;
   --accent: #FF4D17;
 
+  /* Carte (style vectoriel maison, lu par js/map.js) */
+  --map-land: #F6F6F4;
+  --map-water: #DCE3E9;
+  --map-park: #E7ECE3;
+  --map-building: #ECECE8;
+  --map-road: #DEDFE1;
+  --map-road-major: #CFD0D3;
+  --map-path: #CDCED2;
+  --map-rail: #E2E2E4;
+  --map-label: #6B6D74;
+  --map-place: #3B3C40;
+
   --font: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
   --ease: cubic-bezier(.22, .8, .24, 1);
   color-scheme: light;
@@ -29,7 +41,7 @@ button { cursor: pointer; }
 .note:empty { display: none; }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
-#map { position: fixed; inset: 0; background: #F2F2F0; }
+#map { position: fixed; inset: 0; background: var(--map-land); }
 
 /* --- Panneau ------------------------------------------------------------- */
 #sheet {
@@ -172,19 +184,19 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.15); }
 @keyframes pulse { 50% { transform: scale(1.5); } }
 
 /* --- Carte --------------------------------------------------------------- */
-.leaflet-container { font-family: var(--font); background: #F2F2F0; }
-.leaflet-control-attribution { font-size: 10px !important; background: rgba(255,255,255,.8) !important; border-radius: 6px 0 0 0; }
-.leaflet-control-zoom { border: none !important; box-shadow: 0 2px 12px rgba(17,18,20,.12) !important; border-radius: 10px !important; overflow: hidden; }
-.leaflet-control-zoom a { width: 36px !important; height: 36px !important; line-height: 36px !important; color: var(--ink) !important; }
-.basemap-osm { filter: grayscale(1) contrast(.78) brightness(1.13); }
+.maplibregl-map { font-family: var(--font); }
+.maplibregl-ctrl-attrib { font-size: 10px; background: rgba(255,255,255,.82) !important; }
+.maplibregl-ctrl-attrib a { color: var(--sub); }
+.maplibregl-ctrl-group { border-radius: 10px !important; box-shadow: 0 2px 12px rgba(17,18,20,.12) !important; overflow: hidden; }
+.maplibregl-ctrl-group button { width: 36px; height: 36px; }
 .pin-start { width: 18px; height: 18px; border-radius: 50%; background: var(--ink); border: 3px solid #fff;
-  box-shadow: 0 1px 4px rgba(17,18,20,.35); }
-.pin-start::before { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid var(--ink); opacity: 0; }
+  box-shadow: 0 1px 4px rgba(17,18,20,.35); cursor: grab; }
+.pin-start::before { content: ""; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid var(--ink); opacity: 0; pointer-events: none; }
 .searching .pin-start::before { animation: ring 1.6s infinite var(--ease); }
 @keyframes ring { 0% { transform: scale(1); opacity: .5; } 100% { transform: scale(4); opacity: 0; } }
-.pin-cursor { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 3px solid var(--ink); }
-.pin-flag { font: 700 11px/1 var(--font); background: var(--ink); color: #fff; padding: 5px 7px; border-radius: 6px; white-space: nowrap;
-  transform: translate(-50%, -140%); display: inline-block; }
+.pin-cursor { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 3px solid var(--ink); pointer-events: none; }
+.flag { pointer-events: none; }
+.pin-flag { font: 700 11px/1 var(--font); background: var(--ink); color: #fff; padding: 5px 7px; border-radius: 6px; white-space: nowrap; display: inline-block; }
 
 /* Bouton de géolocalisation sur la carte */
 .geo-btn {
@@ -212,7 +224,6 @@ input[type=range]:active::-webkit-slider-thumb { transform: scale(1.15); }
   .handle { display: block; border: none; background: none; padding: 9px 0 0; width: 100%; }
   .handle span { display: block; width: 36px; height: 4px; border-radius: 4px; background: var(--rule); margin: 0 auto; }
   .brand { padding: 8px 18px 10px; }
-  .leaflet-control-zoom { display: none; }
   .geo-btn { top: calc(12px + env(safe-area-inset-top, 0px)); right: 12px; }
   .hero b { font-size: 40px; }
   .facts { grid-template-columns: repeat(2, 1fr); row-gap: 10px; }

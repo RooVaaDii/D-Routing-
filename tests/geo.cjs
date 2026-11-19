@@ -1,6 +1,6 @@
 const { chromium } = require('playwright');
 (async () => {
-  const browser = await chromium.launch({ proxy: { server: process.env.HTTPS_PROXY, bypass: '127.0.0.1,localhost' } });
+  const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'], proxy: { server: process.env.HTTPS_PROXY, bypass: '127.0.0.1,localhost' } });
   for (const vp of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
     const ctx = await browser.newContext({ viewport: vp, deviceScaleFactor: 1, geolocation: { latitude: 48.8830, longitude: 2.3150 }, permissions: ['geolocation'] });
     const page = await ctx.newPage();
