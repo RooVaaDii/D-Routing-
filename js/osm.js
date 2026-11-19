@@ -52,9 +52,7 @@ export async function fetchOsm(bbox, { onStatus, timeoutMs = 35000 } = {}) {
     let received = 0;
     const tick = setInterval(() => {
       const s = Math.round((performance.now() - t0) / 1000);
-      onStatus?.(received
-        ? `Réseau OSM : ${(received / 1e6).toFixed(1)} Mo reçus (${s} s)…`
-        : `Réseau OSM : ${host} prépare les données (${s} s)…`);
+      onStatus?.(received ? `${(received / 1e6).toFixed(1)} MO` : `${host.split('.').slice(-2, -1)[0].toUpperCase()} · ${s} S`);
     }, 500);
     // Délai max pour obtenir le début de la réponse ; ensuite on laisse finir.
     let timer = setTimeout(() => ctrl.abort(), timeoutMs);
