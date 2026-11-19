@@ -25,5 +25,5 @@ self.onmessage = (ev) => {
 };
 
 function summary(p) {
-  return { phase: p.phase, t: p.t, evals: p.evals, bestUp: p.best?.up, bestL: p.best?.L };
+  return { phase: p.phase, t: p.t, evals: p.evals, progress: p.progress, best: p.best, candidates: p.candidates };
 }

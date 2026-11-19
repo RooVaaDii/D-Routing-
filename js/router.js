@@ -1,13 +1,13 @@
 // Moteur d'optimisation : boucles à fort D+ et répétitions de côte.
 // Heuristiques rapides (quelques secondes) plutôt qu'un optimum exact.
 
-import { HW, SURF, gainLoss, forEachNear, nearestNode } from './graph.js';
+import { HW, SURF, climbProfile, climbQuality, forEachNear, nearestNode } from './graph.js';
 import { rng } from './geo.js';
 
 // --- Préférences de surface ------------------------------------------------
 
 /** Multiplicateur de coût d'une arête selon la préférence de surface. */
-function surfaceMultipliers(g, pref) {
+function surfaceMultipliers(g, pref, avoidStairs) {
   const m = new Float32Array(g.M);
   const climbOk = new Uint8Array(g.M);
   for (let e = 0; e < g.M; e++) {
@@ -16,8 +16,8 @@ function surfaceMultipliers(g, pref) {
     if (hw === HW.MAJOR) k = 1.8;
     else if (hw === HW.SECONDARY) k = 1.35;
     else if (hw === HW.TERTIARY) k = 1.1;
-    else if (hw === HW.STEPS) k = 1.6;
-    let ok = hw !== HW.STEPS && hw !== HW.MAJOR;
+    else if (hw === HW.STEPS) k = avoidStairs ? 8 : 1.5;
+    let ok = hw !== HW.MAJOR && !(hw === HW.STEPS && avoidStairs);
     if (pref === 'road') {
       if (!paved) { k *= 3.5; ok = false; }
     } else if (pref === 'trail') {
@@ -76,9 +76,9 @@ class Heap {
 const BETAS = [0, 5, 10, 16]; // intensité de l'attraction vers les pentes
 
 export class Router {
-  constructor(g, surfacePref) {
+  constructor(g, surfacePref, { avoidStairs = false } = {}) {
     this.g = g;
-    const { m, climbOk } = surfaceMultipliers(g, surfacePref);
+    const { m, climbOk } = surfaceMultipliers(g, surfacePref, avoidStairs);
     this.mult = m;
     this.climbOk = climbOk;
     this.base = new Float32Array(g.M);
@@ -89,7 +89,15 @@ export class Router {
       const c = new Float32Array(g.M);
       let minF = Infinity;
       for (let e = 0; e < g.M; e++) {
-        const hil = Math.min((g.up[e] + g.down[e]) / g.len[e], 0.3);
+        // Pente « fiable » : sur une arête courte le bruit du MNT domine, on
+        // n'utilise alors que la différence d'altitude entre ses extrémités.
+        const l = g.len[e];
+        const dz = Math.abs(g.elev[g.ev[e]] - g.elev[g.eu[e]]);
+        let hil = l >= 80 ? (g.up[e] + g.down[e]) / l : dz / Math.max(l, 40);
+        // Escaliers : une grande volée (Montmartre) est intéressante, un petit
+        // escalier de quelques mètres ne doit pas attirer le parcours.
+        if (g.hw[e] === HW.STEPS) hil = !avoidStairs && dz >= 6 ? dz / Math.max(l, 20) : 0;
+        hil = Math.min(hil, 0.25);
         c[e] = this.base[e] / (1 + beta * hil);
         const f = c[e] / g.len[e];
         if (f < minF) minF = f;
@@ -197,17 +205,22 @@ export class Router {
   /** Statistiques d'un parcours (liste de traversées). */
   stats(path) {
     const g = this.g;
-    let L = 0, up = 0, reused = 0, unpaved = 0;
+    let L = 0, reused = 0, unpaved = 0;
     const seen = new Map();
-    for (const [e, rev] of path) {
+    const eles = this.eleBuf || (this.eleBuf = []);
+    eles.length = 0;
+    for (let k = 0; k < path.length; k++) {
+      const [e, rev] = path[k];
+      const s0 = g.s0[e], n = g.sn[e];
+      for (let j = k ? 1 : 0; j < n; j++) eles.push(g.sEle[rev ? s0 + n - 1 - j : s0 + j]);
       L += g.len[e];
-      up += rev ? g.down[e] : g.up[e];
       if (g.surf[e] === SURF.UNPAVED) unpaved += g.len[e];
-      const k = seen.get(e) || 0;
-      if (k > 0) reused += g.len[e];
-      seen.set(e, k + 1);
+      const c = seen.get(e) || 0;
+      if (c > 0) reused += g.len[e];
+      seen.set(e, c + 1);
     }
-    return { L, up, reused, overlap: L > 0 ? reused / L : 0, unpaved };
+    const prof = climbProfile(eles);
+    return { L, up: prof.up, quality: climbQuality(prof.climbs), reused, overlap: L > 0 ? reused / L : 0, unpaved };
   }
 }
 
@@ -328,13 +341,14 @@ export function materialize(g, path, startNode) {
       pushPt(g.sLat[i], g.sLon[i], g.sEle[i]);
     }
   }
-  const [up, down] = gainLoss(ele);
+  const { up, down, climbs } = climbProfile(ele);
   let min = Infinity, max = -Infinity;
   for (const x of ele) { if (x < min) min = x; if (x > max) max = x; }
   return {
     lat: Float64Array.from(lat), lon: Float64Array.from(lon),
     ele: Float32Array.from(ele), dist: Float32Array.from(dist),
     distance: d, up, down, minEle: min, maxEle: max,
+    bigClimbs: climbs.filter((c) => c >= 10).length,
   };
 }
 
@@ -344,16 +358,30 @@ function fastDist(la1, lo1, la2, lo2) {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+/** Tracé allégé (lat, lon entrelacés) pour l'animation de la recherche. */
+export function pathCoords(g, path, startNode) {
+  const out = [];
+  let cur = startNode;
+  out.push(g.lat[cur], g.lon[cur]);
+  for (const [e, rev] of path) {
+    const n = g.sn[e];
+    if (n >= 5) { const i = g.s0[e] + (n >> 1); out.push(g.sLat[i], g.sLon[i]); }
+    cur = rev ? g.eu[e] : g.ev[e];
+    out.push(g.lat[cur], g.lon[cur]);
+  }
+  return Float32Array.from(out);
+}
+
 // --- Solveur principal -----------------------------------------------------------
 
 export function solve(g, params, onProgress = () => {}) {
   const t0 = performance.now();
   const {
     startLatLon, mode = 'loop', dmin, dmax, surface = 'mixed', reps = 0,
-    climbLen = 'auto', budgetMs = 3000, seed = 1,
+    climbLen = 'auto', budgetMs = 3000, seed = 1, avoidStairs = false,
   } = params;
   const rand = rng(seed);
-  const router = new Router(g, surface);
+  const router = new Router(g, surface, { avoidStairs });
   const [sx, sy] = project(g, startLatLon);
   const s = nearestNode(g, sx, sy);
   if (s < 0) throw new Error('Aucune voie praticable près du point de départ.');
@@ -366,13 +394,13 @@ export function solve(g, params, onProgress = () => {}) {
     auto: [100, 3200], short: [100, 450], medium: [350, 1100], long: [900, 3200],
   }[climbLen] || [100, 3200];
   const { climbs, path: climbPath } = findClimbs(router, reach, {
-    minGain: mode === 'repeat' ? 10 : 8, minLen: lenRange[0], maxLen: lenRange[1],
+    minGain: mode === 'repeat' ? 15 : 8, minLen: Math.max(lenRange[0], mode === 'repeat' ? 150 : 100), maxLen: lenRange[1],
   });
 
   const common = { startNode: s, snapDistance: Math.hypot(g.x[s] - sx, g.y[s] - sy) };
   let routes;
   if (mode === 'repeat') {
-    routes = solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, reps, s });
+    routes = solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, reps, s, onProgress });
   } else {
     routes = solveLoop(g, router, tree, climbs, climbPath, { dmin, dmax, target, s, budgetMs, rand, t0, onProgress });
   }
@@ -397,7 +425,7 @@ function distPenalty(L, dmin, dmax, upPerKm) {
 
 // --- Répétitions de côte -----------------------------------------------------------
 
-function solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, reps, s }) {
+function solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, reps, s, onProgress }) {
   const scored = [];
   for (const c of climbs) {
     // On rejoint l'extrémité la plus proche (pied ou sommet).
@@ -415,11 +443,26 @@ function solveRepeats(g, router, tree, climbs, climbPath, { dmin, dmax, target, 
     }
     const L = 2 * a + 2 * N * c.len;
     const est = N * c.gain + approachUp;
-    const score = est - distPenalty(L, dmin, dmax, est / (L / 1000));
+    // Le mode « côte » doit tirer son D+ des répétitions, pas du trajet d'accès.
+    const approachPen = Math.max(0, 2 * a - 0.35 * L) / 1000 * 40;
+    const score = N * c.gain + 0.3 * approachUp - approachPen - distPenalty(L, dmin, dmax, est / (L / 1000));
     scored.push({ c, E, N, a, L, est, score });
   }
   scored.sort((x, y) => y.score - x.score);
-  const pick = pickDistinct(scored, (x) => climbPath(x.c), g.M, 3, 0.3);
+  // Trois propositions variées : la meilleure côte courte, moyenne et longue
+  // (puis les meilleures restantes si une catégorie est vide).
+  const classOf = (x) => (x.c.len < 350 ? 0 : x.c.len < 800 ? 1 : 2);
+  const firsts = [0, 1, 2].map((k) => scored.find((x) => classOf(x) === k)).filter(Boolean);
+  const ordered = [...firsts.sort((a, b) => b.score - a.score), ...scored];
+  const pick = pickDistinct(ordered, (x) => climbPath(x.c), g.M, 3, 0.15);
+  // Côtes examinées, envoyées à l'interface pour l'animation de recherche.
+  const explored = pickDistinct(scored, (x) => climbPath(x.c), g.M, 14, 0.5);
+  onProgress({
+    phase: 'climbs-explored',
+    candidates: explored.map((x) => ({
+      coords: pathCoords(g, climbPath(x.c), x.c.A), up: x.c.gain, L: x.c.len,
+    })),
+  });
   return pick.map((x) => {
     const climb = climbPath(x.c);
     const down = reversePath(climb);
@@ -500,7 +543,8 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
     add(back);
     const st = router.stats(path);
     const upPerKm = st.up / Math.max(st.L / 1000, 0.1);
-    const score = st.up * (1 - 0.8 * st.overlap) - distPenalty(st.L, dmin, dmax, upPerKm);
+    // On optimise la « qualité » des montées (les mini-bosses ne rapportent rien).
+    const score = st.quality * (1 - 0.8 * st.overlap) - distPenalty(st.L, dmin, dmax, upPerKm);
     return { path, ...st, score };
   };
 
@@ -596,6 +640,19 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
   const POOL = 14;
   const insert = (sol, res) => {
     if (!res) return;
+    // Niches : un tracé trop proche d'un autre déjà retenu le remplace seulement
+    // s'il est meilleur. On garde ainsi des propositions variées.
+    res.set = new Set(res.path.map(([e]) => e));
+    for (let k = 0; k < pool.length; k++) {
+      const o = pool[k].res.set;
+      let inter = 0;
+      for (const e of res.set) if (o.has(e)) inter++;
+      if (inter / Math.min(res.set.size, o.size) > 0.6) {
+        if (res.score > pool[k].res.score) pool[k] = { sol, res };
+        pool.sort((a, b) => b.res.score - a.res.score);
+        return;
+      }
+    }
     pool.push({ sol, res });
     pool.sort((a, b) => b.res.score - a.res.score);
     if (pool.length > POOL) pool.length = POOL;
@@ -603,9 +660,25 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
 
   let evals = 0, lastReport = 0;
   const initBudget = budgetMs * 0.3;
+  let shown = [];
+  const consider = (res) => {
+    if (res && shown.length < 4 && (shown.length === 0 || Math.random() < 0.35)) shown.push(res);
+  };
+  const report = (force) => {
+    if (!force && now() - lastReport < 110) return;
+    lastReport = now();
+    const best = pool[0]?.res;
+    onProgress({
+      phase: 'search', t: lastReport, evals, progress: Math.min(1, lastReport / budgetMs),
+      best: best && { up: best.up, L: best.L, coords: pathCoords(g, best.path, s) },
+      candidates: shown.map((r) => ({ up: r.up, L: r.L, coords: pathCoords(g, r.path, s) })),
+    });
+    shown = [];
+  };
   while (now() < initBudget || evals < 8) {
     const sol = newSolution();
     let res = evaluate(sol); evals++;
+    consider(res);
     // Réparation rapide de la distance
     let cur = sol;
     for (let k = 0; k < 3 && res && (res.L < dmin || res.L > dmax); k++) {
@@ -614,6 +687,7 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
       if (r2 && r2.score > res.score) { cur = m; res = r2; }
     }
     insert(cur, res);
+    report();
     if (evals > 400) break;
   }
   while (now() < budgetMs && pool.length) {
@@ -622,12 +696,11 @@ function solveLoop(g, router, tree, climbs, climbPath, ctx) {
     const { sol, res } = pool[i];
     const m = mutate(sol, res);
     const r2 = evaluate(m); evals++;
+    consider(r2);
     if (r2 && (pool.length < POOL || r2.score > pool[pool.length - 1].res.score)) insert(m, r2);
-    if (now() - lastReport > 250) {
-      lastReport = now();
-      onProgress({ phase: 'search', t: lastReport, best: pool[0]?.res, evals });
-    }
+    report();
   }
+  report(true);
 
   // Résultats variés : on écarte les tracés trop semblables.
   const out = [];

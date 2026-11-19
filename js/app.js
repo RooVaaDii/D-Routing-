@@ -1,7 +1,7 @@
 // Interface : carte Leaflet, formulaire, appels au worker, affichage des résultats.
 import { bboxAround, haversine } from './geo.js';
 import { fetchOsm } from './osm.js';
-import { loadDem, browserDecode } from './elevation.js';
+import { loadDem, browserDecode, inFrance, loadIgnDem, validateIgn } from './elevation.js';
 import { drawProfile, indexAt } from './profile.js';
 import { toGpx, downloadText } from './gpx.js';
 
@@ -94,10 +94,14 @@ async function ensureArea(center, radius) {
   const t0 = performance.now();
   status('Téléchargement des routes et chemins (OpenStreetMap)…');
   let demPct = 0;
-  const [osmText, dem] = await Promise.all([
+  const [osmText, terrarium, ign] = await Promise.all([
     fetchOsm(bbox, { onStatus: status }),
     loadDem(bbox, browserDecode, { onProgress: (f) => { demPct = Math.round(f * 100); } }),
+    inFrance(bbox) ? loadIgnDem(bbox).catch((e) => { console.warn('IGN indisponible', e); return null; }) : null,
   ]);
+  const ignDem = ign && validateIgn(ign, terrarium);
+  const dem = ignDem || terrarium;
+  console.info('Altitude :', ignDem ? 'IGN RGE ALTI' : 'Terrarium');
   status(`Construction du graphe… (altitude ${demPct} %)`);
   const built = await call({ type: 'build', osmText, dem, center });
   if (!built.nodes) throw new Error('Aucune voie trouvée dans la zone.');
@@ -128,8 +132,8 @@ $('go').onclick = async () => {
         surface: val('surface'), budgetMs: 3000, seed: (Math.random() * 2 ** 31) | 0,
       },
     }, (p) => {
-      if (p.phase === 'search' && p.bestUp != null) {
-        status(`Optimisation… meilleur : ${(p.bestL / 1000).toFixed(1)} km, D+ ${Math.round(p.bestUp)} m`);
+      if (p.phase === 'search' && p.best) {
+        status(`Optimisation… meilleur : ${(p.best.L / 1000).toFixed(1)} km, D+ ${Math.round(p.best.up)} m`);
       }
     });
     results = res.result.routes;

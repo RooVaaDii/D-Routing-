@@ -82,6 +82,50 @@ export function gainLoss(eles, from = 0, to = eles.length) {
   return [up, down];
 }
 
+/**
+ * D+ / D- « honnêtes » avec seuil d'hystérésis : une variation n'est comptée
+ * qu'une fois confirmée de plus de `th` mètres (comme une montre GPS).
+ * Renvoie aussi la liste des montées (gains) pour juger de leur taille.
+ */
+export function climbProfile(eles, th = 5) {
+  const n = eles.length;
+  const climbs = [];
+  let up = 0, down = 0;
+  if (n < 2) return { up, down, climbs };
+  let lo = eles[0], hi = eles[0], base = eles[0], peak = eles[0], trend = 0;
+  for (let i = 1; i < n; i++) {
+    const e = eles[i];
+    if (trend === 0) {
+      if (e < lo) lo = e;
+      if (e > hi) hi = e;
+      if (e - lo >= th) { trend = 1; base = lo; peak = e; }
+      else if (hi - e >= th) { trend = -1; base = hi; peak = e; }
+    } else if (trend === 1) {
+      if (e > peak) peak = e;
+      else if (peak - e >= th) {
+        climbs.push(peak - base); up += peak - base;
+        base = peak; peak = e; trend = -1;
+      }
+    } else {
+      if (e < peak) peak = e;
+      else if (e - peak >= th) {
+        down += base - peak;
+        base = peak; peak = e; trend = 1;
+      }
+    }
+  }
+  if (trend === 1) { climbs.push(peak - base); up += peak - base; }
+  else if (trend === -1) down += base - peak;
+  return { up, down, climbs };
+}
+
+/** Valeur « sportive » des montées : < 6 m ne compte pas, ≥ 25 m compte pleinement. */
+export function climbQuality(climbs) {
+  let q = 0;
+  for (const g of climbs) q += g * Math.min(1, Math.max(0, (g - 6) / 19));
+  return q;
+}
+
 class Grow {
   constructor(Type, n = 1 << 16) { this.T = Type; this.a = new Type(n); this.n = 0; }
   push(v) {
