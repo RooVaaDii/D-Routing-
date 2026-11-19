@@ -186,7 +186,8 @@ const fmtDec = (x) => x.toLocaleString('fr-FR', { maximumFractionDigits: 1 });
 const goalIsUp = () => val('goal') === 'up';
 const setPct = (el) => el.style.setProperty('--pct', `${((el.value - el.min) / (el.max - el.min)) * 100}%`);
 /** Objectif dénivelé : distance maximale explorée (estimation prudente, ~18 m de D+ par km). */
-const upMaxKm = () => Math.min(42, Math.max(4, parseFloat($('up').value) / 18));
+// Objectif dénivelé : distance maximale explorée (~25 m de D+ par km, plafonnée à 24 km).
+const upMaxKm = () => Math.min(24, Math.max(4, parseFloat($('up').value) / 25));
 function updateGoal() {
   const tol = parseFloat(val('tol')), up = goalIsUp();
   $('goalDist').hidden = up;
@@ -291,7 +292,9 @@ function step(name, st, text = '') {
 }
 
 const areaRadius = () => {
-  const d = goalIsUp() ? upMaxKm() : parseFloat($('dist').value) * (1 + parseFloat(val('tol')));
+  // Objectif dénivelé : zone bornée à 4,5 km de rayon (au-delà, Overpass et le téléphone peinent).
+  if (goalIsUp()) return Math.min(Math.max(upMaxKm() * 1000 * 0.2, 1500), 4500);
+  const d = parseFloat($('dist').value) * (1 + parseFloat(val('tol')));
   return Math.min(Math.max(d * 1000 * 0.3, 1200), 8000);
 };
 
@@ -316,7 +319,8 @@ function ensureArea(center, radius, { force = true } = {}) {
     });
   }
   // Zone un peu plus large et arrondie : moins de nouvelles requêtes quand on ajuste la distance.
-  const z = { center, radius: Math.ceil((radius * 1.25) / 500) * 500, ctrl: new AbortController() };
+  const z = { center, radius: Math.ceil((radius * 1.15) / 250) * 250, ctrl: new AbortController() };
+  diag.log(`zone demandée : ${(z.radius / 1000).toFixed(2)} km de rayon`);
   z.promise = (async () => {
     await loadArea(center, z.radius, z.ctrl.signal);
     area = z;
