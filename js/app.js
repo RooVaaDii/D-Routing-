@@ -302,22 +302,30 @@ let demSource = '';
 const covers = (z, center, radius) => z && haversine(z.center[0], z.center[1], center[0], center[1]) + radius <= z.radius;
 
 /** Charge (ou réutilise) la zone autour du départ. Partagé par le préchargement et la génération. */
-function ensureArea(center, radius) {
+function ensureArea(center, radius, { force = true } = {}) {
   if (covers(area, center, radius)) { for (const s of ['osm', 'dem', 'graph']) step(s, 'done', 'prêt'); return Promise.resolve(); }
   if (loading && covers(loading, center, radius)) return loading.promise;
-  // Une zone plus grande ou ailleurs est demandée : l'ancien téléchargement est annulé tout de
-  // suite (sinon les requêtes s'empilent et les serveurs Overpass nous font attendre).
-  if (loading) { loading.ctrl.abort(); diag.log('téléchargement précédent annulé : nouvelle zone'); }
-  const z = { center, radius: radius * 1.15, ctrl: new AbortController() };
+  if (loading) {
+    // Une seule requête Overpass à la fois : le serveur limite les places par adresse IP et
+    // continue de calculer une requête abandonnée. On attend la requête en cours, puis on ne
+    // charge que la zone la plus récente (un préchargement dépassé est simplement sauté).
+    const me = wanted = { center, radius };
+    return loading.promise.catch(() => {}).then(() => {
+      if (!force && wanted !== me) return;
+      return ensureArea(center, radius, { force });
+    });
+  }
+  // Zone un peu plus large et arrondie : moins de nouvelles requêtes quand on ajuste la distance.
+  const z = { center, radius: Math.ceil((radius * 1.25) / 500) * 500, ctrl: new AbortController() };
   z.promise = (async () => {
     await loadArea(center, z.radius, z.ctrl.signal);
-    if (z.ctrl.signal.aborted) throw new DOMException('Zone remplacée', 'AbortError');
     area = z;
   })();
   z.promise.finally(() => { if (loading === z) loading = null; }).catch(() => {});
   loading = z;
   return z.promise;
 }
+let wanted = null; // dernière zone demandée pendant un téléchargement
 
 /** Plage d'altitude utile d'une grille (2e – 98e centile), pour la teinte du relief. */
 function elevRange(dem) {
@@ -337,7 +345,7 @@ async function loadArea(center, r, signal) {
   const osmP = (async () => {
     const hit = await findCovering('osm', bbox);
     if (hit) { step('osm', 'done', 'en cache'); fx?.network(hit.data); return hit.data; }
-    const text = await fetchOsm(bbox, { signal, onStatus: (t) => { if (!signal.aborted) step('osm', 'on', t.toLowerCase()); } });
+    const text = await fetchOsm(bbox, { signal, onLog: (m) => diag.log(`OSM ${m}`), onStatus: (t) => { if (!signal.aborted) step('osm', 'on', t.toLowerCase()); } });
     step('osm', 'done', `${(text.length / 1e6).toFixed(1)} Mo`);
     fx?.network(text);
     save('osm', bbox, text);
@@ -389,10 +397,10 @@ function preloadSoon() {
     if (state !== 'setup' || !start) return;
     const c = start;
     $('preload').textContent = 'Préparation du terrain autour du départ…';
-    ensureArea(c, areaRadius())
+    ensureArea(c, areaRadius(), { force: false })
       .then(() => { if (start === c) $('preload').textContent = 'Terrain prêt.'; if (state === 'setup') fx?.clear(900); })
       .catch((e) => { if (e.name === 'AbortError') return; $('preload').textContent = ''; fx?.clear(); });
-  }, 500);
+  }, 1000);
 }
 
 // --- Animation de la recherche ---------------------------------------------------------------

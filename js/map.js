@@ -245,8 +245,8 @@ export function tween(ms, onFrame, { ease = (t) => t, alive = () => true } = {})
 // --- Animation du chargement du terrain -------------------------------------------------------
 
 const RINGS = 10;          // anneaux du réseau autour du départ (serrés près de lui)
-const CELL = 110;          // taille d'une tuile de la grille de téléchargement (m)
-const GRID_MAX = 3200;     // rayon couvert par la grille (m) : au-delà, hors champ pendant le chargement
+const CELL = 55;           // taille d'une tuile de la grille de téléchargement (m)
+const GRID_MAX = 2600;     // rayon couvert par la grille (m) : au-delà, hors champ pendant le chargement
 const WAVES = 24;          // couches de la vague (une par couronne, vitesse constante)
 const WAVE_MS = 1600;      // période de la vague
 const WAVE_STEP = 45;      // décalage entre deux couronnes (ms) : la vague traverse en ~1 s
@@ -264,7 +264,7 @@ function cellGrid([lat, lon], radius) {
     for (let j = -n; j < n; j++) {
       const cx = (i + 0.5) * CELL, cy = (j + 0.5) * CELL, d = Math.hypot(cx, cy);
       if (d > R) continue;
-      const g = 5; // joint fin entre tuiles (m)
+      const g = 1.2; // joint (m de chaque côté) : environ 1 pixel au zoom du chargement
       const x0 = lon + (i * CELL + g) / kx, x1 = lon + ((i + 1) * CELL - g) / kx;
       const y0 = lat + (j * CELL + g) / ky, y1 = lat + ((j + 1) * CELL - g) / ky;
       features.push({ type: 'Feature', properties: { w: Math.min(WAVES - 1, Math.floor((d / R) * WAVES)) },
@@ -304,7 +304,7 @@ export class TerrainFx {
     map.addSource('fx-net', { type: 'geojson', data: EMPTY });
     for (let i = 0; i < WAVES; i++) {
       map.addLayer({ id: `fx-cell-${i}`, type: 'fill', source: 'fx-cells', filter: ['==', ['get', 'w'], i],
-        paint: { 'fill-color': t.ink, 'fill-opacity': 0, 'fill-antialias': false } }, before);
+        paint: { 'fill-color': t.ink, 'fill-opacity': 0 } }, before);
     }
     for (let i = 0; i < RINGS; i++) {
       map.addLayer({ id: `fx-net-${i}`, type: 'line', source: 'fx-net', filter: ['==', ['get', 'r'], i],
